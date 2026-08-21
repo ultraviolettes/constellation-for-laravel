@@ -31,9 +31,13 @@ final readonly class Section
         return new self($key, $status, Quality::Full, null, $collectedAt, $data);
     }
 
+    /**
+     * No observation at all. `quality` is Degraded rather than Full: nothing was
+     * read, so the section must never read as a complete observation (ADR 004 R6).
+     */
     public static function unavailable(string $key, string $reason): self
     {
-        return new self($key, Status::Unavailable, Quality::Full, self::truncate($reason), null, []);
+        return new self($key, Status::Unavailable, Quality::Degraded, self::truncate($reason), null, []);
     }
 
     /**
