@@ -1,0 +1,127 @@
+{
+    "schema": 1,
+    "sent_at": "2026-08-21T14:00:00Z",
+    "window": {
+        "from": "2026-08-21T13:45:00Z",
+        "to": "2026-08-21T14:00:00Z"
+    },
+    "app": {
+        "name": "Acme",
+        "environment": "production",
+        "url": "https://acme.example.com",
+        "php_version": "8.3.14",
+        "laravel_version": "12.62.0",
+        "debug_mode": false,
+        "server_time": "2026-08-21T14:00:00Z"
+    },
+    "sections": {
+        "app": {
+            "status": "ok",
+            "quality": "full",
+            "reason": null,
+            "collected_at": "2026-08-21T14:00:00Z",
+            "data": {
+                "name": "Acme",
+                "environment": "production",
+                "url": "https://acme.example.com",
+                "php_version": "8.3.14",
+                "laravel_version": "12.62.0",
+                "debug_mode": false,
+                "server_time": "2026-08-21T14:00:00Z",
+                "pending_migrations": 0,
+                "config_cached": true,
+                "routes_cached": true
+            }
+        },
+        "jobs": {
+            "status": "warning",
+            "quality": "full",
+            "reason": null,
+            "collected_at": "2026-08-21T14:00:00Z",
+            "data": {
+                "window_source": "cursor",
+                "source": "queue_monitors",
+                "totals": {
+                    "processed": 1284,
+                    "failed": 23,
+                    "success_rate": 0.98209
+                },
+                "failure_groups": [
+                    {
+                        "signature": "f88a4427bfec617dec0d7b1585fbaa683fea8bc54a8ad56344ae6ad55fd1f873",
+                        "exception_class": "Illuminate\\Database\\QueryException",
+                        "job_class": "App\\Jobs\\SyncInvoices",
+                        "queue": "default",
+                        "message": "SQLSTATE[HY000] [<num>] Connection refused to '<str>'",
+                        "occurrences": 23,
+                        "first_occurred_at": "2026-08-21T13:47:11Z",
+                        "last_occurred_at": "2026-08-21T13:58:02Z"
+                    }
+                ]
+            }
+        },
+        "queues": {
+            "status": "warning",
+            "quality": "degraded",
+            "reason": "queue_driver_unsupported:redis",
+            "collected_at": "2026-08-21T14:00:00Z",
+            "data": {
+                "throughput_source": "queue_monitors",
+                "queues": [
+                    {
+                        "connection": "database",
+                        "name": "default",
+                        "driver": "database",
+                        "pending": 12,
+                        "oldest_pending_age_seconds": 41,
+                        "throughput_window": 1284,
+                        "failed_window": 2
+                    },
+                    {
+                        "connection": "redis",
+                        "name": "high",
+                        "driver": "redis",
+                        "pending": 402,
+                        "oldest_pending_age_seconds": null,
+                        "throughput_window": 96,
+                        "failed_window": 0
+                    }
+                ]
+            }
+        },
+        "backups": {
+            "status": "unavailable",
+            "quality": "degraded",
+            "reason": "collector_not_installed",
+            "collected_at": null,
+            "data": {}
+        },
+        "schedule": {
+            "status": "ok",
+            "quality": "full",
+            "reason": null,
+            "collected_at": "2026-08-21T14:00:00Z",
+            "data": {
+                "observed_since": "2026-08-14T09:12:00Z",
+                "tasks": [
+                    {
+                        "id": "3f2a1c9d8e7b6a54",
+                        "command": "php artisan invoices:sync",
+                        "expression": "0 * * * *",
+                        "timezone": "Europe/Paris",
+                        "background": false,
+                        "last_ran_at": "2026-08-21T13:00:04Z",
+                        "last_duration_ms": 1840,
+                        "last_exit_code": 0,
+                        "last_failed_at": null,
+                        "last_exception_class": null,
+                        "last_skipped_at": null,
+                        "last_overlapped_at": null,
+                        "missed": 0,
+                        "missed_capped": false
+                    }
+                ]
+            }
+        }
+    }
+}

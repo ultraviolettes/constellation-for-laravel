@@ -1,17 +1,26 @@
 <?php
 
+use Carbon\CarbonImmutable;
+use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Contracts\Queue\Job as QueueJob;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Mockery\MockInterface;
+use Ultraviolettes\Constellation\Collectors\Schedule\TaskHistory;
+use Ultraviolettes\Constellation\Contracts\Collector;
 use Ultraviolettes\Constellation\Http\SnapshotClient;
 use Ultraviolettes\Constellation\Jobs\SendSnapshot;
 use Ultraviolettes\Constellation\Snapshot\CollectorRegistry;
+use Ultraviolettes\Constellation\Snapshot\Window;
 use Ultraviolettes\Constellation\Snapshot\WindowResolver;
+use Ultraviolettes\Constellation\Tests\Doubles\Queues\AgingQueue;
+use Ultraviolettes\Constellation\Tests\Doubles\Queues\FakeQueue;
+use Ultraviolettes\Constellation\Tests\Doubles\Queues\FakeQueueConnector;
 use Ultraviolettes\Constellation\Tests\TestCase;
 
 uses(TestCase::class)->in('Feature');
@@ -181,4 +190,147 @@ function onAttempt(SendSnapshot $job, int $attempts): MockInterface
 function handleSendSnapshot(SendSnapshot $job): void
 {
     $job->handle(app(SnapshotClient::class), app(WindowResolver::class), app(Dispatcher::class));
+}
+
+/**
+ * The single clock read a collector works from, frozen so that every derived
+ * duration in a test is arithmetic rather than a race (§6).
+ */
+function windowAt(string $to = '2026-08-21T14:00:00Z', int $minutes = 15): Window
+{
+    $end = CarbonImmutable::parse($to)->utc();
+
+    return new Window($end->subMinutes($minutes), $end);
+}
+
+/**
+ * One collector, in the exact form it takes on the wire.
+ *
+ * @return array<string, mixed>
+ */
+function sectionOf(string $collector, ?Window $window = null): array
+{
+    /** @var Collector $instance */
+    $instance = app($collector);
+
+    return json_decode(
+        json_encode($instance->collect($window ?? windowAt())->toArray(), JSON_THROW_ON_ERROR),
+        true,
+        512,
+        JSON_THROW_ON_ERROR
+    );
+}
+
+/**
+ * The core `jobs` table, exactly as the framework migration writes it: the SDK
+ * reads it, and never ships a migration of its own (S6).
+ */
+function createJobsTable(): void
+{
+    Schema::create('jobs', function (Blueprint $table) {
+        $table->id();
+        $table->string('queue')->index();
+        $table->longText('payload');
+        $table->unsignedTinyInteger('attempts');
+        $table->unsignedInteger('reserved_at')->nullable();
+        $table->unsignedInteger('available_at');
+        $table->unsignedInteger('created_at');
+    });
+}
+
+/**
+ * @param  array<string, mixed>  $attributes
+ */
+function insertJob(array $attributes = []): void
+{
+    DB::table('jobs')->insert([
+        'queue' => 'default',
+        'payload' => json_encode(['displayName' => 'App\Jobs\SyncInvoices']),
+        'attempts' => 0,
+        'reserved_at' => null,
+        'available_at' => now()->getTimestamp(),
+        'created_at' => now()->getTimestamp(),
+        ...$attributes,
+    ]);
+}
+
+/**
+ * A queue connection whose object is ours, so that the absence of
+ * `creationTimeOfOldestPendingJob()` — normal on Laravel 11 and 12 < 12.20 —
+ * can be exercised on a vendor that ships it (ADR 004 T2, T15, T16).
+ *
+ * @param  array<string, int>  $sizes  Queue name to depth.
+ */
+function fakeQueueDriver(string $driver, array $sizes = [], int|false|null $oldestCreatedAt = false): FakeQueue
+{
+    $queue = $oldestCreatedAt === false
+        ? new FakeQueue($sizes)
+        : new AgingQueue($sizes, $oldestCreatedAt);
+
+    Queue::extend($driver, fn (): FakeQueueConnector => new FakeQueueConnector($queue));
+
+    return $queue;
+}
+
+/**
+ * Minimal doubles of the `spatie/laravel-backup` API, under its own names: the
+ * collector probes `class_exists()` on them (T20) and calls them statically.
+ *
+ * Loaded on demand, never autoloaded: a class cannot be undefined once declared,
+ * and `BackupsAbsentTest` needs the process not to know them yet.
+ */
+function installSpatieBackupDoubles(): void
+{
+    require_once __DIR__.'/Fixtures/spatie-backup.php';
+}
+
+/**
+ * Horizon is probed by `class_exists()` and never called: only its config is
+ * read (T13). Declaring the name is the whole simulation.
+ */
+function installHorizonDouble(): void
+{
+    require_once __DIR__.'/Fixtures/horizon.php';
+}
+
+function scheduleCache(): CacheRepository
+{
+    return cache()->store(config('constellation.cache.store'));
+}
+
+/**
+ * @param  array<string, int|string|null>  $state
+ */
+function writeTaskHistory(string $id, array $state): void
+{
+    scheduleCache()->put(
+        app(TaskHistory::class)->taskKey($id),
+        array_merge(TaskHistory::EMPTY, $state),
+        3600
+    );
+}
+
+/**
+ * @return array<string, mixed>|null
+ */
+function readTaskHistory(string $id): ?array
+{
+    return scheduleCache()->get(app(TaskHistory::class)->taskKey($id));
+}
+
+function writeObservedSince(CarbonImmutable $at): void
+{
+    scheduleCache()->put(app(TaskHistory::class)->sinceKey(), $at->toIso8601ZuluString(), 3600);
+}
+
+/**
+ * A scheduler with nothing but what the test puts in it: the SDK's own task
+ * (S31) would otherwise ride along in every inventory.
+ */
+function emptySchedule(): Schedule
+{
+    config()->set('constellation.schedule.enabled', false);
+    app()->forgetInstance(Schedule::class);
+
+    return app(Schedule::class);
 }
