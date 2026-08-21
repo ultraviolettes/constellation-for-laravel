@@ -2,7 +2,6 @@
 
 namespace Ultraviolettes\Constellation\Collectors;
 
-use Carbon\CarbonImmutable;
 use Ultraviolettes\Constellation\Contracts\Collector;
 use Ultraviolettes\Constellation\Snapshot\Section;
 use Ultraviolettes\Constellation\Snapshot\Status;
@@ -19,7 +18,10 @@ final class AppCollector implements Collector
 
     public function collect(Window $window): Section
     {
-        $now = CarbonImmutable::now('UTC');
+        // The snapshot reads the clock once and hands it over through the
+        // window: re-reading it here would let `collected_at` and the root
+        // `server_time` disagree by a second within one payload (§6).
+        $now = $window->to;
         $facts = $this->facts->all();
 
         $data = $this->facts->identity($now) + [

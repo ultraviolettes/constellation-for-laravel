@@ -2,7 +2,6 @@
 
 namespace Ultraviolettes\Constellation\Collectors;
 
-use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Config\Repository as Config;
 use Ultraviolettes\Constellation\Collectors\Jobs\FailedJobsSource;
 use Ultraviolettes\Constellation\Collectors\Jobs\QueueMonitorSource;
@@ -32,7 +31,8 @@ final class JobsCollector implements Collector
 
     public function collect(Window $window): Section
     {
-        $now = CarbonImmutable::now('UTC');
+        // The single clock read of the snapshot, carried by the window (§6).
+        $now = $window->to;
         $modeA = $this->queueMonitors->isAvailable();
 
         if (! $modeA && ! $this->failedJobs->isAvailable()) {
