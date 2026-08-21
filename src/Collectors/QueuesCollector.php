@@ -1,0 +1,155 @@
+<?php
+
+namespace Ultraviolettes\Constellation\Collectors;
+
+use Illuminate\Contracts\Config\Repository as Config;
+use Ultraviolettes\Constellation\Collectors\Jobs\QueueMonitorSource;
+use Ultraviolettes\Constellation\Collectors\Queues\QueueDepth;
+use Ultraviolettes\Constellation\Collectors\Queues\QueueInventory;
+use Ultraviolettes\Constellation\Collectors\Queues\QueueThroughput;
+use Ultraviolettes\Constellation\Contracts\Collector;
+use Ultraviolettes\Constellation\Snapshot\Section;
+use Ultraviolettes\Constellation\Snapshot\Status;
+use Ultraviolettes\Constellation\Snapshot\Window;
+
+/**
+ * Depth, head age, throughput and failures per queue.
+ *
+ * The status hangs on the age of the oldest pending job alone (ADR 004 T18): a
+ * deep queue that moves is a queue that works, while a queue whose head ages is
+ * a dead worker.
+ */
+final class QueuesCollector implements Collector
+{
+    public const REASON_MONITOR_ABSENT = 'queue_monitor_absent';
+
+    public const REASON_DRIVER_UNSUPPORTED = 'queue_driver_unsupported:';
+
+    public const REASON_READ_FAILED = 'queue_read_failed:';
+
+    public const REASON_AMBIGUOUS = 'throughput_connection_ambiguous';
+
+    public const REASON_TRUNCATED = 'queue_list_truncated';
+
+    public function __construct(
+        private readonly QueueInventory $inventory,
+        private readonly QueueDepth $depth,
+        private readonly QueueThroughput $throughput,
+        private readonly Config $config,
+    ) {}
+
+    public function key(): string
+    {
+        return 'queues';
+    }
+
+    public function collect(Window $window): Section
+    {
+        $now = $window->to;
+        $queues = $this->inventory->all($now);
+
+        // An application running everything on `sync` has no queue to watch. That
+        // is a complete observation whose content is empty, not a degradation (T19).
+        if ($queues === []) {
+            return Section::make($this->key(), Status::Ok, ['throughput_source' => null, 'queues' => []], $now);
+        }
+
+        $throughput = $this->throughput->read($window, $queues);
+
+        $rows = [];
+        $unsupported = [];
+        $unreadable = [];
+        $status = Status::Ok;
+
+        foreach ($queues as $index => $queue) {
+            $depth = $this->depth->read($queue, $now);
+
+            if ($depth['unreadable']) {
+                $unreadable[$queue['connection']] = true;
+
+                continue;
+            }
+
+            if ($depth['unsupported']) {
+                $unsupported[$queue['driver']] = true;
+            }
+
+            $rows[] = [
+                'connection' => $queue['connection'],
+                'name' => $queue['name'],
+                'driver' => $queue['driver'],
+                // `size()` counts delayed and reserved jobs too: queue depth, not
+                // strictly pending work (R8). The status never rests on it.
+                'pending' => $depth['pending'],
+                'oldest_pending_age_seconds' => $depth['age'],
+                'throughput_window' => $throughput['rows'][$index]['throughput'],
+                'failed_window' => $throughput['rows'][$index]['failed'],
+            ];
+
+            $status = $this->worst($status, $this->queueStatus($depth['age']));
+        }
+
+        $max = (int) $this->config->get('constellation.queues.max', 20);
+        $truncated = count($rows) > $max;
+
+        if ($truncated) {
+            usort($rows, fn (array $a, array $b): int => ($b['pending'] ?? 0) <=> ($a['pending'] ?? 0));
+            $rows = array_slice($rows, 0, $max);
+        }
+
+        $section = Section::make($this->key(), $status, [
+            'throughput_source' => $throughput['source'],
+            'queues' => $rows,
+        ], $now);
+
+        // Detection order matters: reasons concatenate with '+' (S13).
+        foreach (array_keys($unsupported) as $driver) {
+            $section = $section->degraded(self::REASON_DRIVER_UNSUPPORTED.$driver);
+        }
+
+        foreach (array_keys($unreadable) as $connection) {
+            $section = $section->degraded(self::REASON_READ_FAILED.$connection);
+        }
+
+        if ($throughput['source'] !== QueueMonitorSource::NAME) {
+            $section = $section->degraded(self::REASON_MONITOR_ABSENT);
+        }
+
+        if ($throughput['ambiguous']) {
+            $section = $section->degraded(self::REASON_AMBIGUOUS);
+        }
+
+        if ($truncated) {
+            $section = $section->degraded(self::REASON_TRUNCATED);
+        }
+
+        return $section;
+    }
+
+    private function queueStatus(?int $age): Status
+    {
+        // A queue whose age could not be read does not contribute: `pending` was
+        // read and founds the status for what it is worth, the reserve rides on
+        // the `quality` axis (S11).
+        if ($age === null) {
+            return Status::Ok;
+        }
+
+        if ($age >= (int) $this->config->get('constellation.queues.critical_age_seconds', 900)) {
+            return Status::Critical;
+        }
+
+        if ($age >= (int) $this->config->get('constellation.queues.warning_age_seconds', 300)) {
+            return Status::Warning;
+        }
+
+        return Status::Ok;
+    }
+
+    private function worst(Status $current, Status $candidate): Status
+    {
+        $rank = [Status::Ok->value => 0, Status::Warning->value => 1, Status::Critical->value => 2];
+
+        return $rank[$candidate->value] > $rank[$current->value] ? $candidate : $current;
+    }
+}
