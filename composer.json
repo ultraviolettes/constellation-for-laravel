@@ -1,0 +1,57 @@
+{
+    "name": "ultraviolettes/constellation-for-laravel",
+    "description": "Send a periodic health snapshot of your Laravel application to Constellation.",
+    "keywords": ["laravel", "monitoring", "queue", "jobs", "maintenance", "report"],
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Baptiste",
+            "email": "baptiste@dark-matter.fr"
+        }
+    ],
+    "require": {
+        "php": "^8.2|^8.3|^8.4|^8.5",
+        "ext-json": "*",
+        "guzzlehttp/guzzle": "^7.8|^8.0",
+        "illuminate/contracts": "^11.0|^12.0|^13.0",
+        "illuminate/support": "^11.0|^12.0|^13.0",
+        "ramsey/uuid": "^4.7"
+    },
+    "require-dev": {
+        "larastan/larastan": "^3.0",
+        "laravel/pint": "^1.0",
+        "orchestra/testbench": "^9.0|^10.0|^11.0",
+        "pestphp/pest": "^4.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Ultraviolettes\\Constellation\\": "src"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Ultraviolettes\\Constellation\\Tests\\": "tests"
+        }
+    },
+    "scripts": {
+        "lint": "pint",
+        "analyse": "phpstan analyse",
+        "test": "pest"
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Ultraviolettes\\Constellation\\ConstellationServiceProvider"
+            ]
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true,
+            "phpstan/extension-installer": true
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
