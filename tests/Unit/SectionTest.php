@@ -24,7 +24,9 @@ it('marks an unavailable section unavailable, with no invented status', function
     $section = Section::unavailable('backups', 'collector_not_installed');
 
     expect($section->status)->toBe(Status::Unavailable)
-        ->and($section->quality)->toBe(Quality::Full)
+        // Nothing was read: the section must never read as a complete
+        // observation, whatever the other axis says (ADR 004 R6).
+        ->and($section->quality)->toBe(Quality::Degraded)
         ->and($section->reason)->toBe('collector_not_installed')
         ->and($section->collectedAt)->toBeNull()
         ->and($section->data)->toBe([]);

@@ -41,12 +41,17 @@ it('publishes the config under the constellation-config tag', function () {
     $published = require config_path('constellation.php');
 
     expect($published)->toHaveKeys([
-        'enabled', 'endpoint', 'token', 'schedule', 'queue', 'http', 'window', 'cache', 'collectors', 'jobs', 'app',
+        'enabled', 'endpoint', 'token', 'schedule', 'queue', 'http', 'window', 'cache', 'collectors', 'jobs',
+        'queues', 'schedule_tasks', 'backups', 'app',
     ])
         ->and($published['schedule'])->toHaveKeys(['enabled', 'cron_expression'])
+        ->and($published['queues'])->toHaveKeys(['monitor', 'max', 'warning_age_seconds', 'critical_age_seconds'])
+        ->and($published['schedule_tasks'])->toHaveKeys([
+            'grace_seconds', 'missed_cap', 'warning_missed', 'critical_missed', 'send_exec_command',
+        ])
         ->and($published['window'])->toHaveKeys(['fallback_minutes', 'max_hours'])
         ->and($published['cache'])->toHaveKeys(['store', 'prefix', 'ttl_days'])
-        ->and($published['collectors'])->toHaveCount(2);
+        ->and($published['collectors'])->toHaveCount(5);
 });
 
 it('publishes the config file and nothing else', function () {

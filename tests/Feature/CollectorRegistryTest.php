@@ -2,7 +2,10 @@
 
 use Illuminate\Support\Facades\Http;
 use Ultraviolettes\Constellation\Collectors\AppCollector;
+use Ultraviolettes\Constellation\Collectors\BackupsCollector;
 use Ultraviolettes\Constellation\Collectors\JobsCollector;
+use Ultraviolettes\Constellation\Collectors\QueuesCollector;
+use Ultraviolettes\Constellation\Collectors\ScheduleCollector;
 use Ultraviolettes\Constellation\Snapshot\CollectorRegistry;
 use Ultraviolettes\Constellation\Snapshot\SnapshotBuilder;
 use Ultraviolettes\Constellation\Tests\Doubles\AlphaCollector;
@@ -79,6 +82,14 @@ it('refuses a class that is not a collector at all', function () {
         ->toThrow(InvalidArgumentException::class, 'does not implement');
 });
 
-it('registers the two collectors of the J2 scope by default', function () {
-    expect(config('constellation.collectors'))->toBe([AppCollector::class, JobsCollector::class]);
+it('registers the five collectors of the J3 scope by default, schedule last', function () {
+    expect(config('constellation.collectors'))->toBe([
+        AppCollector::class,
+        JobsCollector::class,
+        QueuesCollector::class,
+        BackupsCollector::class,
+        // Last on purpose: the only collector whose accuracy depends on
+        // listeners registered elsewhere (ADR 004 §6).
+        ScheduleCollector::class,
+    ]);
 });

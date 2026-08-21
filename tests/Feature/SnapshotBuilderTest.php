@@ -35,7 +35,7 @@ it('keeps collecting the other sections when one collector blows up', function (
 
     expect($sections['exploding'])->toMatchArray([
         'status' => 'unavailable',
-        'quality' => 'full',
+        'quality' => 'degraded',
         'reason' => 'collector_exception',
         'collected_at' => null,
     ])

@@ -37,7 +37,7 @@ it('reports jobs as unavailable when neither source exists', function () {
     $section = jobsSection();
 
     expect($section['status'])->toBe('unavailable')
-        ->and($section['quality'])->toBe('full')
+        ->and($section['quality'])->toBe('degraded')
         ->and($section['reason'])->toBe(JobsCollector::REASON_NO_SOURCE)
         ->and($section['collected_at'])->toBeNull()
         ->and($section['data'])->toBe([]);

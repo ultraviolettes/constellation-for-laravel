@@ -49,13 +49,18 @@ it('stamps every section with the one clock read of the snapshot', function () {
 
     $payload = payload();
 
-    foreach ($payload['sections'] as $section) {
-        expect($section['collected_at'])->toBe($payload['sent_at']);
+    foreach ($payload['sections'] as $key => $section) {
+        // A section that observed nothing has no collection time to stamp (S10);
+        // every other one carries the single clock read of the snapshot.
+        expect($section['collected_at'])->toBe(
+            $section['status'] === 'unavailable' ? null : $payload['sent_at'],
+            "section [{$key}]"
+        );
     }
 });
 
-it('sends the sections of the J2 scope', function () {
-    expect(array_keys(payload()['sections']))->toBe(['app', 'jobs']);
+it('sends the five sections of the J3 scope, the schedule one last', function () {
+    expect(array_keys(payload()['sections']))->toBe(['app', 'jobs', 'queues', 'backups', 'schedule']);
 });
 
 it('freezes the shape of a failure group', function () {
