@@ -1,7 +1,10 @@
 <?php
 
 use Ultraviolettes\Constellation\Collectors\AppCollector;
+use Ultraviolettes\Constellation\Collectors\BackupsCollector;
 use Ultraviolettes\Constellation\Collectors\JobsCollector;
+use Ultraviolettes\Constellation\Collectors\QueuesCollector;
+use Ultraviolettes\Constellation\Collectors\ScheduleCollector;
 
 return [
 
@@ -40,6 +43,12 @@ return [
     'collectors' => [
         AppCollector::class,
         JobsCollector::class,
+        QueuesCollector::class,
+        BackupsCollector::class,
+        // Last on purpose: it is the only collector whose accuracy depends on
+        // listeners registered elsewhere, so its absence reads plainly in the
+        // JSON of `monitor:send --dry-run`.
+        ScheduleCollector::class,
     ],
 
     'jobs' => [
@@ -48,6 +57,30 @@ return [
         'max_rows' => 1000,
         'warning_failures' => 1,
         'critical_failures' => 25,
+    ],
+
+    'queues' => [
+        // ['redis:high', 'sqs:default'] — the syntax of `queue:monitor`.
+        'monitor' => [],
+        'max' => 20,
+        // Both to calibrate on real data (J5).
+        'warning_age_seconds' => 300,
+        'critical_age_seconds' => 900,
+    ],
+
+    // Not 'schedule': that key already carries the SDK's own scheduling (S31).
+    'schedule_tasks' => [
+        'grace_seconds' => 90,
+        'missed_cap' => 100,
+        'warning_missed' => 1,
+        'critical_missed' => 3,
+        // An exec() line is client-written shell and may carry a secret.
+        'send_exec_command' => false,
+    ],
+
+    'backups' => [
+        // Reserved, not implemented: see R3 of ADR 004.
+        'connection_timeout' => null,
     ],
 
     'app' => [

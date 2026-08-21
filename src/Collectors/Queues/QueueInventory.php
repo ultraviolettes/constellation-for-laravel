@@ -74,6 +74,25 @@ final class QueueInventory
     }
 
     /**
+     * The connections the application actually claims: its default, and whatever
+     * the client asked for by hand. A stock `config/queue.php` declares every
+     * driver Laravel ships with, and reading an unused one always fails — that is
+     * a configuration leftover, not a failed observation.
+     *
+     * @return list<string>
+     */
+    public function claimed(): array
+    {
+        $claimed = [(string) $this->config->get('queue.default')];
+
+        foreach ($this->monitored() as [$connection]) {
+            $claimed[] = $connection;
+        }
+
+        return array_values(array_unique($claimed));
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function connections(): array

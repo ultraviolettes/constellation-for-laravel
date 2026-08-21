@@ -55,6 +55,7 @@ final class QueuesCollector implements Collector
         }
 
         $throughput = $this->throughput->read($window, $queues);
+        $claimed = $this->inventory->claimed();
 
         $rows = [];
         $unsupported = [];
@@ -65,7 +66,12 @@ final class QueuesCollector implements Collector
             $depth = $this->depth->read($queue, $now);
 
             if ($depth['unreadable']) {
-                $unreadable[$queue['connection']] = true;
+                // Only a connection the application claims is worth reporting as
+                // unreadable; the rest is stock configuration for drivers it does
+                // not use, and would degrade every snapshot forever.
+                if (in_array($queue['connection'], $claimed, true)) {
+                    $unreadable[$queue['connection']] = true;
+                }
 
                 continue;
             }
