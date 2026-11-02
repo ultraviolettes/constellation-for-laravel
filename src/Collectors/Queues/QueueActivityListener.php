@@ -3,9 +3,6 @@
 namespace Ultraviolettes\Constellation\Collectors\Queues;
 
 use Carbon\CarbonImmutable;
-use DateInterval;
-use DateTimeImmutable;
-use DateTimeInterface;
 use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Queue\Events\JobQueued;
 use Throwable;
@@ -29,16 +26,14 @@ final class QueueActivityListener
             // A delayed job says nothing about when a worker should have taken
             // it before it is due. Counting it would turn an idle queue holding
             // tomorrow's reminder into a dead worker.
-            $now = CarbonImmutable::now()->getTimestamp();
-
-            if ($this->delayed($event->delay, $now)) {
+            if ($this->delayed(is_numeric($event->delay) ? (int) $event->delay : null)) {
                 return;
             }
 
             $this->activity->queued(
                 (string) $event->connectionName,
                 is_string($event->queue) ? $event->queue : null,
-                $now,
+                CarbonImmutable::now()->getTimestamp(),
             );
         } catch (Throwable) {
             // Never in the way of the client's dispatch.
@@ -58,24 +53,12 @@ final class QueueActivityListener
         }
     }
 
-    private function delayed(mixed $delay, int $now): bool
+    /**
+     * `Queue::raiseJobQueuedEvent()` hands the event `secondsUntil($delay)`,
+     * from 11.0.0 to 13.x: a date or an interval has become an int by then.
+     */
+    private function delayed(?int $delay): bool
     {
-        if ($delay === null) {
-            return false;
-        }
-
-        if (is_numeric($delay)) {
-            return (int) $delay > 0;
-        }
-
-        if ($delay instanceof DateTimeInterface) {
-            return $delay->getTimestamp() > $now;
-        }
-
-        if ($delay instanceof DateInterval) {
-            return (new DateTimeImmutable('@0'))->add($delay)->getTimestamp() > 0;
-        }
-
-        return false;
+        return $delay !== null && $delay > 0;
     }
 }

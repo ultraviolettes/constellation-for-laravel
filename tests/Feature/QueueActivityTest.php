@@ -4,6 +4,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Queue\Events\JobQueued;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Ultraviolettes\Constellation\Collectors\Queues\QueueActivity;
@@ -129,17 +130,36 @@ it('ignores sync and null connections, which no worker ever runs', function () {
     expect($writes)->toBe([]);
 });
 
-it('ignores a delayed dispatch, which no worker should take before it is due', function (mixed $delay) {
+it('ignores a delayed dispatch, which no worker should take before it is due', function () {
     bootConstellation();
 
-    fireQueued('store', 'default', stallAt()->getTimestamp(), $delay);
+    // From 11.0 to 13.x the framework hands JobQueued `secondsUntil($delay)`:
+    // a date or an interval given to `->delay()` arrives here as an int.
+    fireQueued('store', 'default', stallAt()->getTimestamp(), 3600);
 
     expect(activityStored('store', 'default', QueueActivity::QUEUED))->toBeNull();
-})->with([
-    'seconds' => [3600],
-    'date' => [fn () => stallAt(86400)],
-    'interval' => [new DateInterval('PT2H')],
-]);
+
+    fireQueued('store', 'default', stallAt()->getTimestamp(), 0);
+
+    expect(activityStored('store', 'default', QueueActivity::QUEUED))->toBe(stallAt()->getTimestamp());
+});
+
+it('turns a dispatch delayed with a date into seconds before the listener sees it', function () {
+    createJobsTable();
+    config()->set('queue.connections.db', ['driver' => 'database', 'queue' => 'default', 'table' => 'jobs', 'retry_after' => 90]);
+    bootConstellation();
+
+    $delays = [];
+    app(Dispatcher::class)->listen(JobQueued::class, function (JobQueued $event) use (&$delays): void {
+        $delays[] = $event->delay;
+    });
+
+    dispatch(fn () => null)->onConnection('db')->delay(now()->addHour());
+    dispatch(fn () => null)->onConnection('db')->delay(new DateInterval('PT2H'));
+
+    expect($delays)->each->toBeInt()
+        ->and(activityStored('db', 'default', QueueActivity::QUEUED))->toBeNull();
+});
 
 it('files a null queue under the default queue of its connection', function () {
     bootConstellation();
@@ -202,70 +222,157 @@ it('never gets in the way of a dispatch when the cache is down', function () {
 });
 
 // ---------------------------------------------------------------------------
+// Never inside the client's transaction (B1)
+// ---------------------------------------------------------------------------
+
+/**
+ * @return list<string>
+ */
+function cacheStatements(array $statements): array
+{
+    return array_values(array_filter($statements, fn (string $sql): bool => str_contains($sql, '"cache"') || str_contains($sql, '`cache`') || str_contains($sql, ' cache ')));
+}
+
+function pretendHttpRequest(): void
+{
+    // Testbench always runs in the console; the HTTP path is the same object
+    // with this one answer flipped.
+    $property = new ReflectionProperty(app(), 'isRunningInConsole');
+    $property->setValue(app(), false);
+}
+
+it('never writes to the cache while the client holds a transaction open', function () {
+    bootConstellation();
+
+    $during = [];
+
+    DB::transaction(function () use (&$during): void {
+        $during = sqlRunDuring(function (): void {
+            fireQueued('store', 'default', CarbonImmutable::now()->getTimestamp());
+        });
+
+        expect(app(QueueActivity::class)->hasPending())->toBeTrue();
+    });
+
+    // The cache store shares the client's connection here, as the database
+    // store does by default: not one statement on it inside the transaction.
+    expect(cacheStatements($during))->toBe([])
+        ->and(app(QueueActivity::class)->hasPending())->toBeFalse()
+        ->and(activityStored('store', 'default', QueueActivity::QUEUED))->toBeInt();
+});
+
+it('keeps a rolled back dispatch for the next safe moment rather than writing inside', function () {
+    bootConstellation();
+
+    try {
+        DB::transaction(function (): void {
+            fireQueued('store', 'default', CarbonImmutable::now()->getTimestamp());
+
+            throw new RuntimeException('client rollback');
+        });
+    } catch (RuntimeException) {
+    }
+
+    expect(activityStored('store', 'default', QueueActivity::QUEUED))->toBeNull()
+        ->and(app(QueueActivity::class)->hasPending())->toBeTrue();
+
+    // The process ends (artisan command, worker shutdown): written then.
+    app()->terminate();
+
+    expect(activityStored('store', 'default', QueueActivity::QUEUED))->toBeInt();
+});
+
+it('writes nothing during an HTTP request, and everything once it terminates', function () {
+    pretendHttpRequest();
+    bootConstellation();
+
+    $during = sqlRunDuring(function (): void {
+        fireQueued('store', 'default', CarbonImmutable::now()->getTimestamp());
+        fireQueued('store', 'emails', CarbonImmutable::now()->getTimestamp());
+    });
+
+    expect($during)->toBe([])
+        ->and(activityStored('store', 'default', QueueActivity::QUEUED))->toBeNull();
+
+    // After the response is sent.
+    app()->terminate();
+
+    expect(activityStored('store', 'default', QueueActivity::QUEUED))->toBeInt()
+        ->and(activityStored('store', 'emails', QueueActivity::QUEUED))->toBeInt();
+});
+
+it('throttles across processes by reading what another one stored', function () {
+    bootConstellation();
+    $now = CarbonImmutable::now()->getTimestamp();
+
+    storeActivity('store', 'default', queued: $now - 30, started: null);
+
+    // A new FPM request: a new instance, with no memory of the last write.
+    app()->forgetInstance(QueueActivity::class);
+
+    $writes = sqlRunDuring(fn () => fireQueued('store', 'default', $now));
+
+    expect(array_filter($writes, fn (string $sql): bool => ! str_starts_with(strtolower($sql), 'select')))->toBe([])
+        ->and(activityStored('store', 'default', QueueActivity::QUEUED))->toBe($now - 30);
+
+    app()->forgetInstance(QueueActivity::class);
+    fireQueued('store', 'default', $now + 31);
+
+    expect(activityStored('store', 'default', QueueActivity::QUEUED))->toBe($now + 31);
+});
+
+// ---------------------------------------------------------------------------
 // Verdict
 // ---------------------------------------------------------------------------
 
-it('confirms a dead worker over two snapshots and turns the section critical', function () {
+it('calls a dead worker on a single snapshot and turns the section critical', function () {
     // The worker started its last job two hours ago; jobs kept coming.
     storeActivity('store', 'default', queued: stallAt(-20)->getTimestamp(), started: stallAt(-7200)->getTimestamp());
 
-    $first = stallSection();
+    $section = stallSection();
 
-    // One sighting is a suspicion, not a verdict: an idle queue that received
-    // a job a second ago looks exactly the same through two timestamps.
-    expect($first['data']['queues'][0]['stalled'])->toBeFalse()
-        ->and($first['status'])->toBe('ok');
-
-    $second = stallSection(900);
-
-    expect($second['data']['queues'][0])->toMatchArray([
+    // No confirmation on the SDK side: the server opens an incident only on
+    // two consecutive critical snapshots (ADR 004 T18 as amended).
+    expect($section['data']['queues'][0])->toMatchArray([
         'oldest_pending_age_seconds' => null,
         'last_queued_at' => '2026-08-21T13:59:40Z',
         'last_started_at' => '2026-08-21T12:00:00Z',
         'stalled' => true,
     ])
-        ->and($second['status'])->toBe('critical')
+        ->and($section['status'])->toBe('critical')
         // The head age is still unread: the T16 reserve stays exactly where it was.
-        ->and($second['quality'])->toBe('degraded')
-        ->and($second['reason'])->toContain(QueuesCollector::REASON_DRIVER_UNSUPPORTED.'redis');
+        ->and($section['quality'])->toBe('degraded')
+        ->and($section['reason'])->toContain(QueuesCollector::REASON_DRIVER_UNSUPPORTED.'redis');
 });
 
-it('clears the suspicion when the worker was only waiting for work', function () {
-    // Idle for two hours, then a job a second before the snapshot.
-    storeActivity('store', 'default', queued: stallAt(-1)->getTimestamp(), started: stallAt(-7200)->getTimestamp());
+it('never calls an empty queue stalled, whatever the timestamps say', function () {
+    // `queue:clear`, or a worker that drained the queue before the throttle let
+    // it store its last start: nothing is left for anyone to do.
+    fakeQueueDriver('redis', ['default' => 0]);
+    storeActivity('store', 'default', queued: stallAt(-20)->getTimestamp(), started: stallAt(-86400)->getTimestamp());
 
-    expect(stallSection()['data']['queues'][0]['stalled'])->toBeFalse();
+    $section = stallSection();
 
-    // The worker took it two seconds later.
-    storeActivity('store', 'default', queued: null, started: stallAt(1)->getTimestamp());
-
-    $next = stallSection(900);
-
-    expect($next['data']['queues'][0]['stalled'])->toBeFalse()
-        ->and($next['status'])->toBe('ok')
-        ->and(activityStored('store', 'default', QueueActivity::SUSPECT))->toBeNull();
+    expect($section['data']['queues'][0]['stalled'])->toBeFalse()
+        ->and($section['status'])->toBe('ok');
 });
 
-it('does not confirm twice in the same minute', function () {
+it('writes nothing when it judges', function () {
     storeActivity('store', 'default', queued: stallAt(-20)->getTimestamp(), started: stallAt(-7200)->getTimestamp());
 
-    stallSection();
+    $writes = sqlRunDuring(fn () => stallSection());
 
-    // `monitor:send --dry-run` run twice in a row is not a second witness.
-    expect(stallSection(30)['data']['queues'][0]['stalled'])->toBeFalse()
-        ->and(stallSection(60)['data']['queues'][0]['stalled'])->toBeTrue();
+    expect(array_filter($writes, fn (string $sql): bool => ! str_starts_with(strtolower($sql), 'select')))->toBe([]);
 });
 
-it('waits the whole threshold without a start before suspecting anything', function (int $sinceStart, bool $stalled) {
+it('waits the whole threshold without a start before calling anything', function (int $sinceStart, bool $stalled) {
     config()->set('constellation.queues.stalled_after_seconds', 3600);
     storeActivity('store', 'default', queued: stallAt(-10)->getTimestamp(), started: stallAt(-$sinceStart)->getTimestamp());
 
-    stallSection();
-
-    expect(stallSection(120)['data']['queues'][0]['stalled'])->toBe($stalled);
+    expect(stallSection()['data']['queues'][0]['stalled'])->toBe($stalled);
 })->with([
     // A long job holding the only worker for 50 minutes is not a dead worker.
-    'busy for 50 minutes' => [3000 - 120, false],
+    'busy for 50 minutes' => [3000, false],
     'nothing started for an hour' => [3600, true],
 ]);
 
@@ -274,30 +381,25 @@ it('forgives what the per-minute write throttle can explain', function () {
     // after it may well have been started already.
     storeActivity('store', 'default', queued: stallAt(-7160)->getTimestamp(), started: stallAt(-7200)->getTimestamp());
 
-    stallSection();
-
-    expect(stallSection(900)['data']['queues'][0]['stalled'])->toBeFalse();
+    expect(stallSection()['data']['queues'][0]['stalled'])->toBeFalse();
 });
 
 it('reports a queue whose last start came after its last dispatch as healthy', function () {
     storeActivity('store', 'default', queued: stallAt(-7300)->getTimestamp(), started: stallAt(-7200)->getTimestamp());
 
-    stallSection();
-
-    // Idle for two hours, nothing waiting: a quiet queue, not a dead worker.
-    expect(stallSection(900)['data']['queues'][0]['stalled'])->toBeFalse();
+    // Idle for two hours, nothing new: a quiet queue, not a dead worker.
+    expect(stallSection()['data']['queues'][0]['stalled'])->toBeFalse();
 });
 
 it('never calls a worker dead when it has never been seen starting a job', function () {
     // Jobs queued since the install, no start ever recorded: a dead worker, or
     // a worker started before the package and never restarted. Undecidable.
-    storeActivity('store', 'default', queued: stallAt(-20)->getTimestamp(), started: null);
+    storeActivity('store', 'default', queued: stallAt(-7200)->getTimestamp(), started: null);
 
-    stallSection();
-    $section = stallSection(7200);
+    $section = stallSection();
 
     expect($section['data']['queues'][0])->toMatchArray([
-        'last_queued_at' => '2026-08-21T13:59:40Z',
+        'last_queued_at' => '2026-08-21T12:00:00Z',
         'last_started_at' => null,
         'stalled' => null,
     ])
@@ -342,10 +444,36 @@ it('adds the stall to what the head age already says, never the reverse', functi
     fakeQueueDriver('redis', ['default' => 3], stallAt(-30)->getTimestamp());
     storeActivity('store', 'default', queued: stallAt(-20)->getTimestamp(), started: stallAt(-10)->getTimestamp());
 
-    stallSection();
-    $section = stallSection(120);
+    $section = stallSection();
 
     expect($section['data']['queues'][0]['stalled'])->toBeFalse()
-        ->and($section['data']['queues'][0]['oldest_pending_age_seconds'])->toBe(150)
+        ->and($section['data']['queues'][0]['oldest_pending_age_seconds'])->toBe(30)
         ->and((string) $section['reason'])->not->toContain(QueuesCollector::REASON_DRIVER_UNSUPPORTED);
+});
+
+it('never truncates a stalled queue away', function () {
+    config()->set('constellation.queues.max', 2);
+    config()->set('constellation.queues.monitor', ['store:low', 'store:high', 'store:mid']);
+    fakeQueueDriver('redis', ['default' => 1, 'low' => 5, 'high' => 900, 'mid' => 40]);
+
+    // The shallowest queue is the dead one.
+    storeActivity('store', 'default', queued: stallAt(-20)->getTimestamp(), started: stallAt(-7200)->getTimestamp());
+
+    $section = stallSection();
+
+    expect(array_map(fn (array $row): string => $row['name'].':'.json_encode($row['stalled']), $section['data']['queues']))
+        ->toBe(['default:true', 'high:false'])
+        ->and($section['reason'])->toContain(QueuesCollector::REASON_TRUNCATED)
+        ->and($section['status'])->toBe('critical');
+});
+
+it('keeps every stalled queue even past the limit', function () {
+    config()->set('constellation.queues.max', 1);
+    config()->set('constellation.queues.monitor', ['store:high']);
+    fakeQueueDriver('redis', ['default' => 1, 'high' => 900]);
+
+    storeActivity('store', 'default', queued: stallAt(-20)->getTimestamp(), started: stallAt(-7200)->getTimestamp());
+    storeActivity('store', 'high', queued: stallAt(-20)->getTimestamp(), started: stallAt(-7200)->getTimestamp());
+
+    expect(array_column(stallSection()['data']['queues'], 'stalled'))->toBe([true, true]);
 });
