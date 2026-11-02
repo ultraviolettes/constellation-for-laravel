@@ -33,7 +33,7 @@ beforeEach(function () {
     }
 });
 
-it('is accepted by the real server, a confirmed dead worker on legacy redis included', function () {
+it('is accepted by the real server, a dead worker on legacy redis included', function () {
     useCursorCache();
     config()->set('constellation.endpoint', e2eEnv('CONSTELLATION_E2E_ENDPOINT'));
     config()->set('constellation.token', e2eEnv('CONSTELLATION_E2E_TOKEN'));
@@ -51,13 +51,9 @@ it('is accepted by the real server, a confirmed dead worker on legacy redis incl
     $now = CarbonImmutable::now('UTC');
 
     // The worker started its last job two hours ago; jobs kept being queued.
+    // The send job's own queue is that stalled one: it goes out synchronously.
     fireProcessing('legacy-redis', 'default', $now->subHours(2)->getTimestamp());
     fireQueued('legacy-redis', 'default', $now->subMinutes(20)->getTimestamp());
-
-    // A first collection a quarter of an hour ago raised the suspicion...
-    CarbonImmutable::setTestNow($now->subMinutes(15));
-    $this->artisan('monitor:send', ['--dry-run' => true])->assertSuccessful();
-    CarbonImmutable::setTestNow();
 
     $built = null;
     $sent = null;
@@ -68,8 +64,10 @@ it('is accepted by the real server, a confirmed dead worker on legacy redis incl
         $sent = $event;
     });
 
-    // ...this one confirms it, and goes over the wire for real.
-    $this->artisan('monitor:send', ['--sync' => true])
+    // One snapshot says it; the server's two-consecutive rule decides whether
+    // it becomes an incident.
+    $this->artisan('monitor:send')
+        ->expectsOutputToContain('looks blocked')
         ->expectsOutputToContain('Snapshot accepted (202)')
         ->assertSuccessful();
 

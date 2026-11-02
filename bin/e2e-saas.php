@@ -5,11 +5,16 @@
  * from the outside — nothing in it is modified — against the database named by
  * DB_DATABASE, and either:
  *
+ *   host                        prints the database host the SaaS would write to;
  *   setup                       creates a team, project and environment with the
  *                               SaaS factories and prints the environment id;
  *   verify <env-id> <idem-key>  checks what the accepted snapshot left in
  *                               `snapshots` and `snapshot_sections`, prints it,
- *                               and exits non-zero on the first mismatch.
+ *                               and exits non-zero on the first mismatch;
+ *   cleanup <env-id>            deletes the throwaway team behind that
+ *                               environment — and by cascade its project,
+ *                               environment, token, snapshots and sections —
+ *                               then its owner.
  *
  * Usage: php bin/e2e-saas.php <saas-path> setup|verify …
  */
@@ -35,6 +40,35 @@ function fail(string $message): never
 {
     fwrite(STDERR, "e2e: {$message}\n");
     exit(1);
+}
+
+if ($command === 'host') {
+    $connection = (string) config('database.default');
+
+    echo (string) config('database.connections.'.$connection.'.host'), "\n";
+    exit(0);
+}
+
+if ($command === 'cleanup') {
+    $environment = DB::table('environments')->where('id', (int) ($argv[3] ?? 0))->first();
+
+    if ($environment === null) {
+        exit(0);
+    }
+
+    $team = DB::table('teams')->where('id', $environment->team_id)->first();
+
+    DB::transaction(function () use ($team): void {
+        // Every table of the tenant cascades from `teams` (D25).
+        DB::table('teams')->where('id', $team->id)->delete();
+
+        if (! DB::table('teams')->where('owner_id', $team->owner_id)->exists()) {
+            DB::table('users')->where('id', $team->owner_id)->delete();
+        }
+    });
+
+    echo "e2e: removed team #{$team->id} and its owner\n";
+    exit(0);
 }
 
 if ($command === 'setup') {

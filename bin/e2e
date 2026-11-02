@@ -16,7 +16,11 @@
 # SaaS over plain HTTP — `RequireSecureIngest` lets it through because
 # INGEST_REQUIRE_TLS is off by default and APP_ENV is local, the documented
 # local setting, so no code is bypassed — run `pest --group=e2e` against it,
-# check the rows in `snapshots` / `snapshot_sections`, stop the server.
+# check the rows in `snapshots` / `snapshot_sections`, then delete the
+# throwaway team (everything else cascades) and stop the server.
+#
+# Refuses to run unless the SaaS database is on this machine: it migrates and
+# writes, and must never be pointed at a shared or production database.
 
 set -euo pipefail
 
@@ -26,8 +30,12 @@ SAAS_DB="${CONSTELLATION_SAAS_DB:-constellation_d}"
 PORT="${CONSTELLATION_SAAS_PORT:-8004}"
 WORK="$(mktemp -d)"
 SERVER_PID=""
+ENV_ID=""
 
 cleanup() {
+    if [[ -n "$ENV_ID" ]]; then
+        DB_DATABASE="$SAAS_DB" APP_ENV=local php "$SDK_PATH/bin/e2e-saas.php" "$SAAS_PATH" cleanup "$ENV_ID" || true
+    fi
     if [[ -n "$SERVER_PID" ]]; then
         # `artisan serve` forks the PHP built-in server: stop the whole group.
         kill -- "-$SERVER_PID" 2>/dev/null || kill "$SERVER_PID" 2>/dev/null || true
@@ -40,6 +48,12 @@ trap cleanup EXIT
 saas() {
     (cd "$SAAS_PATH" && DB_DATABASE="$SAAS_DB" APP_ENV=local php artisan "$@")
 }
+
+HOST="$(DB_DATABASE="$SAAS_DB" APP_ENV=local php "$SDK_PATH/bin/e2e-saas.php" "$SAAS_PATH" host | tail -n 1)"
+case "$HOST" in
+    ""|127.0.0.1|localhost|::1|/*) ;;
+    *) echo "e2e: refusing to run against database host [${HOST}]: local databases only" >&2; exit 2 ;;
+esac
 
 echo "e2e: migrating ${SAAS_DB}"
 saas migrate --force --no-interaction >/dev/null
