@@ -154,3 +154,14 @@ it('still answers when the cache is down', function () {
         'queue_workers' => 'unknown',
     ]);
 });
+
+it('reads the last delivery once and survives one it cannot parse', function () {
+    cursorStore()->put(app(LastDelivery::class)->key(), ['sent_at' => 'not a date', 'unavailable' => []], 3600);
+
+    $reads = sqlRunDuring(fn () => aboutJson());
+
+    expect(aboutJson())->toMatchArray(['last_successful_send' => null, 'unavailable_collectors' => null])
+        ->and(aboutText())->toContain('unknown (unreadable)')
+        // One read of the delivery record per `about`, not one per line.
+        ->and(array_filter($reads, fn (string $sql): bool => str_contains($sql, '"cache"') && str_contains($sql, 'select')))->toHaveCount(2);
+});

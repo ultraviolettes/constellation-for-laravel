@@ -39,6 +39,7 @@ final class AboutConstellation
     {
         $enabled = (bool) $this->config->get('constellation.enabled');
         $token = ! blank($this->config->get('constellation.token'));
+        [$lastSend, $unavailable] = $this->delivery();
 
         return [
             'Version' => $this->show(Constellation::VERSION),
@@ -46,8 +47,8 @@ final class AboutConstellation
             'Token' => $this->show($token, fn (bool $present): string => $present ? '<fg=green>configured</>' : '<fg=red;options=bold>MISSING</> (CONSTELLATION_TOKEN)'),
             'Endpoint' => $this->show((string) $this->config->get('constellation.endpoint')),
             'Cache store' => $this->cacheStore(),
-            'Last successful send' => $this->lastSend(),
-            'Unavailable collectors' => $this->unavailable(),
+            'Last successful send' => $lastSend,
+            'Unavailable collectors' => $unavailable,
             'Queue workers' => $this->workers($enabled && $token),
         ];
     }
@@ -73,42 +74,30 @@ final class AboutConstellation
     }
 
     /**
-     * @return Closure(bool): mixed
+     * One cache read for both lines it feeds.
+     *
+     * @return array{0: Closure(bool): mixed, 1: Closure(bool): mixed}
      */
-    private function lastSend(): Closure
-    {
-        try {
-            $sentAt = $this->delivery->read()['sent_at'] ?? null;
-        } catch (Throwable) {
-            return $this->show(null, fn (): string => self::UNKNOWN.' (cache unreachable)');
-        }
-
-        return $this->show($sentAt, function (?string $at): string {
-            if ($at === null) {
-                return '<fg=yellow>never</> (php artisan monitor:send --sync)';
-            }
-
-            $date = CarbonImmutable::parse($at);
-
-            return $date->format('Y-m-d H:i:s').' UTC ('.$date->diffForHumans().')';
-        });
-    }
-
-    /**
-     * @return Closure(bool): mixed
-     */
-    private function unavailable(): Closure
+    private function delivery(): array
     {
         try {
             $delivery = $this->delivery->read();
+            $sentAt = $delivery === null ? null : CarbonImmutable::parse($delivery['sent_at'])->utc();
         } catch (Throwable) {
-            $delivery = null;
+            $unknown = $this->show(null, fn (): string => self::UNKNOWN.' (unreadable)');
+
+            return [$unknown, $unknown];
         }
 
-        // Unknown and none are two different answers (rule 2 of §2).
-        $unavailable = $delivery['unavailable'] ?? null;
+        $lastSend = $this->show(
+            $sentAt?->toIso8601ZuluString(),
+            fn (): string => $sentAt === null
+                ? '<fg=yellow>never</> (php artisan monitor:send --sync)'
+                : $sentAt->format('Y-m-d H:i:s').' UTC ('.$sentAt->diffForHumans().')',
+        );
 
-        return $this->show($unavailable, function (?array $sections): string {
+        // Unknown and none are two different answers (rule 2 of §2).
+        $unavailable = $this->show($delivery['unavailable'] ?? null, function (?array $sections): string {
             if ($sections === null) {
                 return self::UNKNOWN;
             }
@@ -123,6 +112,8 @@ final class AboutConstellation
                 $sections,
             ));
         });
+
+        return [$lastSend, $unavailable];
     }
 
     /**
