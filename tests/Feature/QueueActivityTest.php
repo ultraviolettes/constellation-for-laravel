@@ -2,14 +2,12 @@
 
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Events\Dispatcher;
-use Illuminate\Contracts\Queue\Job as QueueJob;
 use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Queue\Events\JobQueued;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Ultraviolettes\Constellation\Collectors\Queues\QueueActivity;
 use Ultraviolettes\Constellation\Collectors\QueuesCollector;
-use Ultraviolettes\Constellation\ConstellationServiceProvider;
 use Ultraviolettes\Constellation\Snapshot\Window;
 
 /**
@@ -34,39 +32,6 @@ beforeEach(function () {
 function stallAt(int $offsetSeconds = 0): CarbonImmutable
 {
     return CarbonImmutable::parse(STALL_AT)->addSeconds($offsetSeconds);
-}
-
-/**
- * The listeners are wired at boot, from the config of that moment: booting a
- * fresh provider instance is the honest way to test that decision.
- */
-function bootConstellation(): void
-{
-    app()->register(ConstellationServiceProvider::class, force: true);
-}
-
-function fireQueued(string $connection, ?string $queue, int $at, mixed $delay = null): void
-{
-    CarbonImmutable::setTestNow(CarbonImmutable::createFromTimestamp($at, 'UTC'));
-
-    app(Dispatcher::class)->dispatch(new JobQueued($connection, $queue, 1, 'App\Jobs\Ping', '{}', $delay));
-
-    CarbonImmutable::setTestNow();
-}
-
-function fireProcessing(string $connection, ?string $queue, int $at): void
-{
-    $job = Mockery::mock(QueueJob::class);
-    $job->shouldReceive('getQueue')->andReturn($queue);
-    // The framework's own JobProcessing listeners read these.
-    $job->shouldReceive('payload')->andReturn([]);
-    $job->shouldReceive('resolveName')->andReturn('App\Jobs\Ping');
-
-    CarbonImmutable::setTestNow(CarbonImmutable::createFromTimestamp($at, 'UTC'));
-
-    app(Dispatcher::class)->dispatch(new JobProcessing($connection, $job));
-
-    CarbonImmutable::setTestNow();
 }
 
 function activityStored(string $connection, string $queue, string $kind): mixed

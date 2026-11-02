@@ -100,8 +100,9 @@ final class QueuesCollector implements Collector
                 'oldest_pending_age_seconds' => $depth['age'],
                 'throughput_window' => $throughput['rows'][$index]['throughput'],
                 'failed_window' => $throughput['rows'][$index]['failed'],
-                // Appended, never inserted: the server stores `data` as is and a
-                // newer field must not move an older one (rule 3 of §2).
+                // Appended, never inserted: an addition must read as one in the
+                // frozen vector. The server stores `data` as jsonb, unknown
+                // fields included (rule 3 of §2) — order is not kept there.
                 'last_queued_at' => $activity[$index]['last_queued_at'],
                 'last_started_at' => $activity[$index]['last_started_at'],
                 'stalled' => $activity[$index]['stalled'],
