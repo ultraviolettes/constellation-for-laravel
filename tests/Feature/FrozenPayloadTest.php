@@ -18,6 +18,11 @@ use Ultraviolettes\Constellation\Snapshot\Window;
  * disappears, any `sent_at` that moves fails this test loudly — which is the
  * whole point. It is meant to be edited only alongside the ingest contract.
  *
+ * Amended once, deliberately: the three dead-worker fields of each queue row
+ * (`last_queued_at`, `last_started_at`, `stalled`) were appended after the J3
+ * freeze. Additive only — no key moved, none disappeared — and accepted as is
+ * by the ingest endpoint, which stores `data` verbatim (rule 3 of §2).
+ *
  * The sections are stated here rather than collected, on purpose: a frozen
  * vector must not move with the PHP version, the Laravel version or the clock of
  * the machine running the suite. What the *collectors* produce is frozen in
@@ -99,6 +104,9 @@ function frozenSnapshot(): Snapshot
                         'oldest_pending_age_seconds' => 41,
                         'throughput_window' => 1284,
                         'failed_window' => 2,
+                        'last_queued_at' => '2026-08-21T13:59:31Z',
+                        'last_started_at' => '2026-08-21T13:59:20Z',
+                        'stalled' => false,
                     ],
                     [
                         'connection' => 'redis',
@@ -108,6 +116,9 @@ function frozenSnapshot(): Snapshot
                         'oldest_pending_age_seconds' => null,
                         'throughput_window' => 96,
                         'failed_window' => 0,
+                        'last_queued_at' => '2026-08-21T13:58:12Z',
+                        'last_started_at' => '2026-08-21T13:57:40Z',
+                        'stalled' => false,
                     ],
                 ],
             ], $at)->degraded('queue_driver_unsupported:redis')->toArray(),

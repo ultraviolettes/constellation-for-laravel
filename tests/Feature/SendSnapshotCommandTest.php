@@ -1,8 +1,11 @@
 <?php
 
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Ultraviolettes\Constellation\Collectors\Queues\QueueActivity;
+use Ultraviolettes\Constellation\Collectors\Schedule\TaskHistory;
 use Ultraviolettes\Constellation\Jobs\SendSnapshot;
 use Ultraviolettes\Constellation\Snapshot\WindowResolver;
 
@@ -117,4 +120,79 @@ it('refuses to run when the client disabled the package', function () {
         ->assertFailed();
 
     Bus::assertNothingDispatched();
+});
+
+/**
+ * C1: with a single worker on `default`, the send job queues exactly where the
+ * stall is. The snapshot reporting a dead worker must not wait behind it.
+ */
+function blockSendQueue(?int $age = null, bool $stalled = true): void
+{
+    useCursorCache();
+    config()->set('queue.default', 'store');
+    config()->set('queue.connections', [
+        'sync' => ['driver' => 'sync'],
+        'store' => ['driver' => 'redis', 'queue' => 'default'],
+    ]);
+
+    $now = CarbonImmutable::now()->getTimestamp();
+    fakeQueueDriver('redis', ['default' => 12], $age === null ? false : $now - $age);
+
+    $activity = app(QueueActivity::class);
+    cursorStore()->put($activity->key('store', 'default', QueueActivity::QUEUED), $now - 20, 3600);
+    cursorStore()->put($activity->key('store', 'default', QueueActivity::STARTED), $stalled ? $now - 7200 : $now - 5, 3600);
+}
+
+it('sends synchronously when the queue the job would take is stalled', function () {
+    Bus::fake();
+    blockSendQueue();
+
+    $this->artisan('monitor:send')->expectsOutputToContain('looks blocked');
+
+    Bus::assertDispatchedSync(SendSnapshot::class);
+    expect(Bus::dispatched(SendSnapshot::class))->toBeEmpty();
+});
+
+it('sends synchronously when the queue the job would take holds a job past the critical age', function () {
+    Bus::fake();
+    blockSendQueue(age: 1000, stalled: false);
+
+    $this->artisan('monitor:send')->expectsOutputToContain('looks blocked');
+
+    Bus::assertDispatchedSync(SendSnapshot::class);
+});
+
+it('queues as usual when the stall is on another queue than its own', function () {
+    Bus::fake();
+    blockSendQueue();
+    config()->set('constellation.queue.queue', 'monitoring');
+
+    $this->artisan('monitor:send')->expectsOutputToContain('Snapshot queued')->assertSuccessful();
+
+    Bus::assertDispatched(SendSnapshot::class);
+    Bus::assertNotDispatchedSync(SendSnapshot::class);
+});
+
+it('queues as usual when its queue is healthy', function () {
+    Bus::fake();
+    blockSendQueue(age: 30, stalled: false);
+
+    $this->artisan('monitor:send')->assertSuccessful();
+
+    Bus::assertDispatched(SendSnapshot::class);
+});
+
+it('writes nothing at all in dry-run', function () {
+    useCursorCache();
+    emptySchedule()->command('inspire')->hourly();
+    config()->set('queue.default', 'store');
+    config()->set('queue.connections', ['store' => ['driver' => 'redis', 'queue' => 'default']]);
+    fakeQueueDriver('redis', ['default' => 3]);
+
+    $writes = sqlRunDuring(fn () => $this->artisan('monitor:send', ['--dry-run' => true])->assertSuccessful());
+
+    // Neither the schedule observation base nor anything else: a dry run looks.
+    expect(array_values(array_filter($writes, fn (string $sql): bool => ! str_starts_with(strtolower(ltrim($sql)), 'select'))))
+        ->toBe([])
+        ->and(cursorStore()->get(app(TaskHistory::class)->sinceKey()))->toBeNull();
 });

@@ -4,6 +4,7 @@ namespace Ultraviolettes\Constellation\Collectors;
 
 use Illuminate\Contracts\Config\Repository as Config;
 use Ultraviolettes\Constellation\Collectors\Jobs\QueueMonitorSource;
+use Ultraviolettes\Constellation\Collectors\Queues\QueueActivity;
 use Ultraviolettes\Constellation\Collectors\Queues\QueueDepth;
 use Ultraviolettes\Constellation\Collectors\Queues\QueueInventory;
 use Ultraviolettes\Constellation\Collectors\Queues\QueueThroughput;
@@ -15,9 +16,16 @@ use Ultraviolettes\Constellation\Snapshot\Window;
 /**
  * Depth, head age, throughput and failures per queue.
  *
- * The status hangs on the age of the oldest pending job alone (ADR 004 T18): a
- * deep queue that moves is a queue that works, while a queue whose head ages is
- * a dead worker.
+ * The status hangs on the age of the oldest pending job (ADR 004 T18): a deep
+ * queue that moves is a queue that works, while a queue whose head ages is a
+ * dead worker. Where that age cannot be read — Redis and SQS before 12.20 (T16)
+ * — `stalled` says the same thing from two cached timestamps: jobs were queued,
+ * work is still waiting, and no worker started one for `stalled_after_seconds`.
+ *
+ * The stall signal never degrades the section. It is a second witness, not the
+ * observation the `quality` axis vouches for: an array cache or a worker never
+ * seen starting makes it `null`, and `oldest_pending_age_seconds` keeps its own
+ * reserve (`queue_driver_unsupported:<driver>`) exactly as before.
  */
 final class QueuesCollector implements Collector
 {
@@ -35,6 +43,7 @@ final class QueuesCollector implements Collector
         private readonly QueueInventory $inventory,
         private readonly QueueDepth $depth,
         private readonly QueueThroughput $throughput,
+        private readonly QueueActivity $activity,
         private readonly Config $config,
     ) {}
 
@@ -57,13 +66,27 @@ final class QueuesCollector implements Collector
         $throughput = $this->throughput->read($window, $queues);
         $claimed = $this->inventory->claimed();
 
+        // Depth first: the stall verdict needs it — a readable, empty queue is
+        // never stalled, whatever the timestamps say.
+        $depths = [];
+
+        foreach ($queues as $index => $queue) {
+            $depths[$index] = $this->depth->read($queue, $now);
+        }
+
+        $activity = $this->activity->assess(
+            $queues,
+            $now,
+            array_map(fn (array $depth): ?int => $depth['unreadable'] ? null : $depth['pending'], $depths),
+        );
+
         $rows = [];
         $unsupported = [];
         $unreadable = [];
         $status = Status::Ok;
 
         foreach ($queues as $index => $queue) {
-            $depth = $this->depth->read($queue, $now);
+            $depth = $depths[$index];
 
             if ($depth['unreadable']) {
                 // Only a connection the application claims is worth reporting as
@@ -90,17 +113,30 @@ final class QueuesCollector implements Collector
                 'oldest_pending_age_seconds' => $depth['age'],
                 'throughput_window' => $throughput['rows'][$index]['throughput'],
                 'failed_window' => $throughput['rows'][$index]['failed'],
+                // Appended, never inserted: an addition must read as one in the
+                // frozen vector. The server stores `data` as jsonb, unknown
+                // fields included (rule 3 of §2) — order is not kept there.
+                'last_queued_at' => $activity[$index]['last_queued_at'],
+                'last_started_at' => $activity[$index]['last_started_at'],
+                'stalled' => $activity[$index]['stalled'],
             ];
 
             $status = $this->worst($status, $this->queueStatus($depth['age']));
+
+            // No start for a whole threshold while work waits: the dead worker
+            // of §3, as critical as a head older than `critical_age_seconds`.
+            // One snapshot says it; the server's two-consecutive rule decides
+            // whether it becomes an incident (ADR 004 T18, as amended).
+            if ($activity[$index]['stalled'] === true) {
+                $status = $this->worst($status, Status::Critical);
+            }
         }
 
         $max = (int) $this->config->get('constellation.queues.max', 20);
         $truncated = count($rows) > $max;
 
         if ($truncated) {
-            usort($rows, fn (array $a, array $b): int => ($b['pending'] ?? 0) <=> ($a['pending'] ?? 0));
-            $rows = array_slice($rows, 0, $max);
+            $rows = $this->truncate($rows, $max);
         }
 
         $section = Section::make($this->key(), $status, [
@@ -130,6 +166,24 @@ final class QueuesCollector implements Collector
         }
 
         return $section;
+    }
+
+    /**
+     * A snapshot is a bounded object (§1), but a stalled queue is the one line
+     * the section exists for: stalled rows come first and are never cut, even
+     * past `queues.max`; the rest fill what is left, deepest first.
+     *
+     * @param  list<array<string, mixed>>  $rows
+     * @return list<array<string, mixed>>
+     */
+    private function truncate(array $rows, int $max): array
+    {
+        $stalled = array_values(array_filter($rows, fn (array $row): bool => $row['stalled'] === true));
+        $others = array_values(array_filter($rows, fn (array $row): bool => $row['stalled'] !== true));
+
+        usort($others, fn (array $a, array $b): int => ($b['pending'] ?? 0) <=> ($a['pending'] ?? 0));
+
+        return [...$stalled, ...array_slice($others, 0, max(0, $max - count($stalled)))];
     }
 
     private function queueStatus(?int $age): Status

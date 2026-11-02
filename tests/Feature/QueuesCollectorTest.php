@@ -320,5 +320,10 @@ it('freezes the shape of the queues data block', function () {
             'oldest_pending_age_seconds',
             'throughput_window',
             'failed_window',
+            // Added after the J3 freeze, at the end of the row on purpose: the
+            // server stores `data` as is and tolerates unknown fields (rule 3).
+            'last_queued_at',
+            'last_started_at',
+            'stalled',
         ]);
 });

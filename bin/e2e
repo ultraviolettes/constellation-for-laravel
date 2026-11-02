@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+#
+# End-to-end check: a snapshot built by this SDK, sent to a real Constellation
+# server, accepted, and stored. Nothing in the SaaS checkout is modified.
+#
+#   CONSTELLATION_SAAS_PATH=../constellation bin/e2e
+#
+# Environment:
+#   CONSTELLATION_SAAS_PATH   checkout of ultraviolettes/constellation (required),
+#                             dependencies installed, .env pointing at PostgreSQL
+#   CONSTELLATION_SAAS_DB     database to migrate and use      (constellation_d)
+#   CONSTELLATION_SAAS_PORT   port for `php artisan serve`     (8004)
+#
+# Steps: migrate the SaaS database, create a throwaway team/project/environment
+# with the SaaS factories, issue its token with `ingest:token:issue`, serve the
+# SaaS over plain HTTP — `RequireSecureIngest` lets it through because
+# INGEST_REQUIRE_TLS is off by default and APP_ENV is local, the documented
+# local setting, so no code is bypassed — run `pest --group=e2e` against it,
+# check the rows in `snapshots` / `snapshot_sections`, then delete the
+# throwaway team (everything else cascades) and stop the server.
+#
+# Refuses to run unless the SaaS database is on this machine: it migrates and
+# writes, and must never be pointed at a shared or production database.
+
+set -euo pipefail
+
+SDK_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SAAS_PATH="$(cd "${CONSTELLATION_SAAS_PATH:?Set CONSTELLATION_SAAS_PATH to a checkout of ultraviolettes/constellation}" && pwd)"
+SAAS_DB="${CONSTELLATION_SAAS_DB:-constellation_d}"
+PORT="${CONSTELLATION_SAAS_PORT:-8004}"
+WORK="$(mktemp -d)"
+SERVER_PID=""
+ENV_ID=""
+
+cleanup() {
+    if [[ -n "$ENV_ID" ]]; then
+        DB_DATABASE="$SAAS_DB" APP_ENV=local php "$SDK_PATH/bin/e2e-saas.php" "$SAAS_PATH" cleanup "$ENV_ID" || true
+    fi
+    if [[ -n "$SERVER_PID" ]]; then
+        # `artisan serve` forks the PHP built-in server: stop the whole group.
+        kill -- "-$SERVER_PID" 2>/dev/null || kill "$SERVER_PID" 2>/dev/null || true
+        wait "$SERVER_PID" 2>/dev/null || true
+    fi
+    rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+saas() {
+    (cd "$SAAS_PATH" && DB_DATABASE="$SAAS_DB" APP_ENV=local php artisan "$@")
+}
+
+HOST="$(DB_DATABASE="$SAAS_DB" APP_ENV=local php "$SDK_PATH/bin/e2e-saas.php" "$SAAS_PATH" host | tail -n 1)"
+case "$HOST" in
+    ""|127.0.0.1|localhost|::1|/*) ;;
+    *) echo "e2e: refusing to run against database host [${HOST}]: local databases only" >&2; exit 2 ;;
+esac
+
+echo "e2e: migrating ${SAAS_DB}"
+saas migrate --force --no-interaction >/dev/null
+
+echo "e2e: creating a throwaway environment"
+ENV_ID="$(DB_DATABASE="$SAAS_DB" APP_ENV=local php "$SDK_PATH/bin/e2e-saas.php" "$SAAS_PATH" setup | tail -n 1)"
+
+TOKEN="$(saas ingest:token:issue "$ENV_ID" --name=e2e | sed -n 's/^ *CONSTELLATION_TOKEN=//p')"
+[[ -n "$TOKEN" ]] || { echo "e2e: could not issue a token" >&2; exit 1; }
+echo "e2e: environment #${ENV_ID}, token issued"
+
+echo "e2e: serving the SaaS on 127.0.0.1:${PORT}"
+(cd "$SAAS_PATH" && DB_DATABASE="$SAAS_DB" APP_ENV=local exec setsid php artisan serve --host=127.0.0.1 --port="$PORT" --no-reload) \
+    >"$WORK/server.log" 2>&1 &
+SERVER_PID=$!
+
+for _ in $(seq 1 50); do
+    curl -s -o /dev/null "http://127.0.0.1:${PORT}/up" && break
+    sleep 0.2
+done
+
+echo "e2e: sending a snapshot from the SDK"
+(cd "$SDK_PATH" && \
+    CONSTELLATION_E2E_ENDPOINT="http://127.0.0.1:${PORT}/api/v1/snapshots" \
+    CONSTELLATION_E2E_TOKEN="$TOKEN" \
+    CONSTELLATION_E2E_OUTPUT="$WORK/sent.json" \
+    vendor/bin/pest --group=e2e)
+
+[[ -s "$WORK/sent.json" ]] || { echo "e2e: the test did not report an accepted snapshot" >&2; cat "$WORK/server.log" >&2; exit 1; }
+KEY="$(php -r 'echo json_decode(file_get_contents($argv[1]), true)["idempotency_key"];' "$WORK/sent.json")"
+
+echo "e2e: checking what landed in ${SAAS_DB}"
+DB_DATABASE="$SAAS_DB" APP_ENV=local php "$SDK_PATH/bin/e2e-saas.php" "$SAAS_PATH" verify "$ENV_ID" "$KEY"

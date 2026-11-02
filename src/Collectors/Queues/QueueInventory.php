@@ -56,6 +56,27 @@ final class QueueInventory
     }
 
     /**
+     * The same inventory from configuration alone — no query, no I/O — for
+     * diagnostics that must stay instant even when the database is down.
+     *
+     * @return list<array{connection: string, name: string, driver: string}>
+     */
+    public function configured(): array
+    {
+        $found = [];
+
+        foreach (array_keys($this->connections()) as $connection) {
+            $this->add($found, $connection, $this->defaultQueue($connection));
+        }
+
+        foreach ([...$this->monitored(), ...$this->horizon()] as [$connection, $queue]) {
+            $this->add($found, $connection, $queue);
+        }
+
+        return array_values($found);
+    }
+
+    /**
      * @param  array<string, array{connection: string, name: string, driver: string}>  $found
      */
     private function add(array &$found, string $connection, string $queue): void

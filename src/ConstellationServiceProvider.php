@@ -8,9 +8,16 @@ use Illuminate\Console\Events\ScheduledTaskFinished;
 use Illuminate\Console\Events\ScheduledTaskSkipped;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Events\Dispatcher;
+use Illuminate\Foundation\Console\AboutCommand;
+use Illuminate\Queue\Events\JobProcessing;
+use Illuminate\Queue\Events\JobQueued;
 use Illuminate\Support\ServiceProvider;
 use Ultraviolettes\Constellation\Collectors\AppFacts;
+use Ultraviolettes\Constellation\Collectors\Queues\QueueActivity;
+use Ultraviolettes\Constellation\Collectors\Queues\QueueActivityListener;
+use Ultraviolettes\Constellation\Collectors\QueuesCollector;
 use Ultraviolettes\Constellation\Collectors\Schedule\TaskActivityListener;
+use Ultraviolettes\Constellation\Console\AboutConstellation;
 use Ultraviolettes\Constellation\Console\SendSnapshotCommand;
 use Ultraviolettes\Constellation\Snapshot\CollectorRegistry;
 
@@ -21,6 +28,10 @@ final class ConstellationServiceProvider extends ServiceProvider
         $this->mergeConfigFrom(__DIR__.'/../config/constellation.php', 'constellation');
 
         $this->app->singleton(AppFacts::class);
+
+        // A singleton for its per-process write throttle: one instance per
+        // request, per worker, per Octane process.
+        $this->app->singleton(QueueActivity::class);
 
         $this->app->singleton(CollectorRegistry::class, fn ($app) => new CollectorRegistry(
             $app,
@@ -37,8 +48,10 @@ final class ConstellationServiceProvider extends ServiceProvider
 
             $this->commands([SendSnapshotCommand::class]);
             $this->listenToScheduledTasks();
+            $this->describeInAbout();
         }
 
+        $this->listenToQueueActivity();
         $this->registerScheduledSend();
     }
 
@@ -58,6 +71,44 @@ final class ConstellationServiceProvider extends ServiceProvider
         $events->listen(ScheduledBackgroundTaskFinished::class, [TaskActivityListener::class, 'backgroundFinished']);
         $events->listen(ScheduledTaskFailed::class, [TaskActivityListener::class, 'failed']);
         $events->listen(ScheduledTaskSkipped::class, [TaskActivityListener::class, 'skipped']);
+    }
+
+    /**
+     * A section of `php artisan about`, computed only when `about` runs: the
+     * closure costs nothing at boot. `AboutCommand` lives in the framework, not
+     * in `illuminate/support`, hence the probe (same reasoning as T1).
+     */
+    private function describeInAbout(): void
+    {
+        if (! class_exists(AboutCommand::class)) {
+            return;
+        }
+
+        AboutCommand::add('Constellation', fn (): array => $this->app->make(AboutConstellation::class)());
+    }
+
+    /**
+     * Not console only, unlike the scheduler listeners: `JobQueued` is born
+     * wherever the client dispatches, web requests first.
+     *
+     * Decided once, at boot, so that a disabled package, a missing token or a
+     * removed queues collector costs nothing at all — not even a listener call
+     * per job. A worker started before the package was installed has none of
+     * this until it is restarted, which is why `about` and the README say so.
+     */
+    private function listenToQueueActivity(): void
+    {
+        if (! config('constellation.enabled')
+            || blank(config('constellation.token'))
+            || ! in_array(QueuesCollector::class, (array) config('constellation.collectors', []), true)) {
+            return;
+        }
+
+        /** @var Dispatcher $events */
+        $events = $this->app->make(Dispatcher::class);
+
+        $events->listen(JobQueued::class, [QueueActivityListener::class, 'queued']);
+        $events->listen(JobProcessing::class, [QueueActivityListener::class, 'processing']);
     }
 
     /**

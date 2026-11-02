@@ -1,0 +1,73 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    name: PHP ${{ matrix.php }} · Laravel ${{ matrix.laravel }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.2', '8.3', '8.4', '8.5']
+        # Laravel 11 is missing on purpose, not by oversight: every 11.x release
+        # now carries Packagist security advisories, and Composer refuses to
+        # install them. Testing 11 again means lifting that block for these
+        # cells — a decision for the package owner, still pending. Until then
+        # 11 stays declared (ADR 003 S2) and untested, like PHP 8.2 was (R1).
+        laravel: ['12.*', '13.*']
+        include:
+          - laravel: '12.*'
+            testbench: '10.*'
+          - laravel: '13.*'
+            testbench: '11.*'
+        exclude:
+          # Laravel 13 requires PHP 8.3.
+          - laravel: '13.*'
+            php: '8.2'
+
+    services:
+      # B1 is only fully demonstrable on PostgreSQL (25P02, 55P03).
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sdk
+          POSTGRES_PASSWORD: sdk
+          POSTGRES_DB: sdk_pg_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U sdk"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: pdo_sqlite, pdo_pgsql
+          coverage: none
+
+      - name: Pin Laravel and Testbench
+        run: composer require "laravel/framework:${{ matrix.laravel }}" "orchestra/testbench:${{ matrix.testbench }}" --dev --no-update --no-interaction
+
+      - name: Install
+        run: composer update --prefer-dist --no-interaction --no-progress --with-all-dependencies
+
+      - name: Pint
+        run: vendor/bin/pint --test
+
+      - name: PHPStan
+        run: vendor/bin/phpstan analyse --memory-limit=2G --no-progress
+
+      # The e2e group needs a running Constellation server: excluded by phpunit.xml.
+      - name: Pest
+        run: vendor/bin/pest
+        env:
+          CONSTELLATION_TEST_PGSQL_URL: pgsql://sdk:sdk@127.0.0.1:5432/sdk_pg_test

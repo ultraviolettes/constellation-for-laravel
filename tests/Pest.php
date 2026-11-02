@@ -6,16 +6,20 @@ use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Contracts\Queue\Job as QueueJob;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Queue\Events\JobProcessing;
+use Illuminate\Queue\Events\JobQueued;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Mockery\MockInterface;
 use Ultraviolettes\Constellation\Collectors\Schedule\TaskHistory;
+use Ultraviolettes\Constellation\ConstellationServiceProvider;
 use Ultraviolettes\Constellation\Contracts\Collector;
 use Ultraviolettes\Constellation\Http\SnapshotClient;
 use Ultraviolettes\Constellation\Jobs\SendSnapshot;
 use Ultraviolettes\Constellation\Snapshot\CollectorRegistry;
+use Ultraviolettes\Constellation\Snapshot\LastDelivery;
 use Ultraviolettes\Constellation\Snapshot\Window;
 use Ultraviolettes\Constellation\Snapshot\WindowResolver;
 use Ultraviolettes\Constellation\Tests\Doubles\Queues\AgingQueue;
@@ -23,7 +27,7 @@ use Ultraviolettes\Constellation\Tests\Doubles\Queues\FakeQueue;
 use Ultraviolettes\Constellation\Tests\Doubles\Queues\FakeQueueConnector;
 use Ultraviolettes\Constellation\Tests\TestCase;
 
-uses(TestCase::class)->in('Feature');
+uses(TestCase::class)->in('Feature', 'E2e');
 
 /**
  * @param  list<class-string>  $classes
@@ -189,7 +193,7 @@ function onAttempt(SendSnapshot $job, int $attempts): MockInterface
 
 function handleSendSnapshot(SendSnapshot $job): void
 {
-    $job->handle(app(SnapshotClient::class), app(WindowResolver::class), app(Dispatcher::class));
+    $job->handle(app(SnapshotClient::class), app(WindowResolver::class), app(Dispatcher::class), app(LastDelivery::class));
 }
 
 /**
@@ -333,4 +337,37 @@ function emptySchedule(): Schedule
     app()->forgetInstance(Schedule::class);
 
     return app(Schedule::class);
+}
+
+/**
+ * The listeners are wired at boot, from the config of that moment: booting a
+ * fresh provider instance is the honest way to test that decision.
+ */
+function bootConstellation(): void
+{
+    app()->register(ConstellationServiceProvider::class, force: true);
+}
+
+function fireQueued(string $connection, ?string $queue, int $at, mixed $delay = null): void
+{
+    CarbonImmutable::setTestNow(CarbonImmutable::createFromTimestamp($at, 'UTC'));
+
+    app(Dispatcher::class)->dispatch(new JobQueued($connection, $queue, 1, 'App\Jobs\Ping', '{}', $delay));
+
+    CarbonImmutable::setTestNow();
+}
+
+function fireProcessing(string $connection, ?string $queue, int $at): void
+{
+    $job = Mockery::mock(QueueJob::class);
+    $job->shouldReceive('getQueue')->andReturn($queue);
+    // The framework's own JobProcessing listeners read these.
+    $job->shouldReceive('payload')->andReturn([]);
+    $job->shouldReceive('resolveName')->andReturn('App\Jobs\Ping');
+
+    CarbonImmutable::setTestNow(CarbonImmutable::createFromTimestamp($at, 'UTC'));
+
+    app(Dispatcher::class)->dispatch(new JobProcessing($connection, $job));
+
+    CarbonImmutable::setTestNow();
 }

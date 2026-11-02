@@ -19,10 +19,18 @@ final class SnapshotBuilder
         private readonly Dispatcher $events,
     ) {}
 
-    public function build(): Snapshot
+    /**
+     * @param  bool  $readOnly  Collect without writing anything anywhere — the
+     *                          `--dry-run` contract: looking changes nothing.
+     */
+    public function build(bool $readOnly = false): Snapshot
     {
         $now = CarbonImmutable::now('UTC');
         $window = $this->windows->resolve($now);
+
+        if ($readOnly) {
+            $window = $window->readOnly();
+        }
 
         $sections = [];
 

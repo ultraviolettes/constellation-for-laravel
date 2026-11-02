@@ -1,5 +1,6 @@
 <?php
 
+use Carbon\CarbonImmutable;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
@@ -17,6 +18,10 @@ const KEY = 'e6b1a5a0-0000-4000-8000-000000000000';
 const WINDOW_TO = '2026-08-17T14:00:00Z';
 
 beforeEach(function () {
+    // Sent a few seconds after its window closed, as nominally: a snapshot
+    // older than STALE_AFTER_SECONDS is dropped rather than sent.
+    $this->travelTo(CarbonImmutable::parse(WINDOW_TO)->addSeconds(5));
+
     config()->set('constellation.token', 'secret-bearer-token');
     config()->set('constellation.endpoint', 'https://app.constellation.test/api/v1/snapshots');
 });
@@ -271,4 +276,36 @@ it('allows exactly two attempts', function () {
     expect(sendJob()->tries)->toBe(2)
         ->and(sendJob()->backoff)->toBe(30)
         ->and(sendJob()->timeout)->toBe(30);
+});
+
+it('drops a snapshot that waited too long in the queue instead of sending it late', function () {
+    Http::fake();
+    Event::fake([SnapshotSendFailed::class]);
+    Log::spy();
+
+    // The worker carrying it was dead; it recovers 31 minutes later.
+    $this->travelTo(CarbonImmutable::parse(WINDOW_TO)->addSeconds(SendSnapshot::STALE_AFTER_SECONDS + 1));
+
+    $job = sendJob();
+    $queueJob = onAttempt($job, 1);
+    handleSendSnapshot($job);
+
+    Http::assertNothingSent();
+    Event::assertDispatched(SnapshotSendFailed::class, fn (SnapshotSendFailed $event) => $event->reason === 'stale');
+    // Ended normally: no release, no failure, so no row in failed_jobs.
+    $queueJob->shouldNotHaveReceived('release');
+    $queueJob->shouldNotHaveReceived('fail');
+    expect(cache()->get(app(WindowResolver::class)->key()))->toBeNull();
+});
+
+it('never moves the cursor backwards', function () {
+    Http::fake(['*' => Http::response(['status' => 'ignored', 'reason' => 'stale_window'], 202)]);
+
+    // A newer snapshot went out synchronously while this one sat in a
+    // blocked queue; the server answers 202 stale_window to the late one.
+    cache()->put(app(WindowResolver::class)->key(), ['window_to' => '2026-08-17T14:15:00Z', 'sent_at' => '2026-08-17T14:15:01Z'], 3600);
+
+    dispatch_sync(sendJob());
+
+    expect(cache()->get(app(WindowResolver::class)->key()))->toMatchArray(['window_to' => '2026-08-17T14:15:00Z']);
 });
