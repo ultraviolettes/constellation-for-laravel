@@ -66,6 +66,12 @@ return [
         // Both to calibrate on real data (J5).
         'warning_age_seconds' => 300,
         'critical_age_seconds' => 900,
+        // No job started for this long while jobs were queued: the dead-worker
+        // signal that also works where the head age cannot be read (Redis/SQS
+        // before 12.20). One hour clears the longest legitimate job on a
+        // single-worker queue (exports, imports, backups) and leaves room for
+        // the confirmation by a second snapshot; see the README.
+        'stalled_after_seconds' => 3600,
     ],
 
     // Not 'schedule': that key already carries the SDK's own scheduling (S31).

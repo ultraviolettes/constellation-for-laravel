@@ -75,7 +75,10 @@
                         "pending": 12,
                         "oldest_pending_age_seconds": 41,
                         "throughput_window": 1284,
-                        "failed_window": 2
+                        "failed_window": 2,
+                        "last_queued_at": "2026-08-21T13:59:31Z",
+                        "last_started_at": "2026-08-21T13:59:20Z",
+                        "stalled": false
                     },
                     {
                         "connection": "redis",
@@ -84,7 +87,10 @@
                         "pending": 402,
                         "oldest_pending_age_seconds": null,
                         "throughput_window": 96,
-                        "failed_window": 0
+                        "failed_window": 0,
+                        "last_queued_at": "2026-08-21T13:58:12Z",
+                        "last_started_at": "2026-08-21T13:57:40Z",
+                        "stalled": false
                     }
                 ]
             }

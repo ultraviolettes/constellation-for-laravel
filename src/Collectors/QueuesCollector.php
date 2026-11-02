@@ -4,6 +4,7 @@ namespace Ultraviolettes\Constellation\Collectors;
 
 use Illuminate\Contracts\Config\Repository as Config;
 use Ultraviolettes\Constellation\Collectors\Jobs\QueueMonitorSource;
+use Ultraviolettes\Constellation\Collectors\Queues\QueueActivity;
 use Ultraviolettes\Constellation\Collectors\Queues\QueueDepth;
 use Ultraviolettes\Constellation\Collectors\Queues\QueueInventory;
 use Ultraviolettes\Constellation\Collectors\Queues\QueueThroughput;
@@ -15,9 +16,16 @@ use Ultraviolettes\Constellation\Snapshot\Window;
 /**
  * Depth, head age, throughput and failures per queue.
  *
- * The status hangs on the age of the oldest pending job alone (ADR 004 T18): a
- * deep queue that moves is a queue that works, while a queue whose head ages is
- * a dead worker.
+ * The status hangs on the age of the oldest pending job (ADR 004 T18): a deep
+ * queue that moves is a queue that works, while a queue whose head ages is a
+ * dead worker. Where that age cannot be read — Redis and SQS before 12.20 (T16)
+ * — a confirmed `stalled` says the same thing from two cached timestamps: jobs
+ * were queued, and no worker started one for `stalled_after_seconds`.
+ *
+ * The stall signal never degrades the section. It is a second witness, not the
+ * observation the `quality` axis vouches for: an array cache or a worker never
+ * seen starting makes it `null`, and `oldest_pending_age_seconds` keeps its own
+ * reserve (`queue_driver_unsupported:<driver>`) exactly as before.
  */
 final class QueuesCollector implements Collector
 {
@@ -35,6 +43,7 @@ final class QueuesCollector implements Collector
         private readonly QueueInventory $inventory,
         private readonly QueueDepth $depth,
         private readonly QueueThroughput $throughput,
+        private readonly QueueActivity $activity,
         private readonly Config $config,
     ) {}
 
@@ -55,6 +64,7 @@ final class QueuesCollector implements Collector
         }
 
         $throughput = $this->throughput->read($window, $queues);
+        $activity = $this->activity->assess($queues, $now);
         $claimed = $this->inventory->claimed();
 
         $rows = [];
@@ -90,9 +100,21 @@ final class QueuesCollector implements Collector
                 'oldest_pending_age_seconds' => $depth['age'],
                 'throughput_window' => $throughput['rows'][$index]['throughput'],
                 'failed_window' => $throughput['rows'][$index]['failed'],
+                // Appended, never inserted: the server stores `data` as is and a
+                // newer field must not move an older one (rule 3 of §2).
+                'last_queued_at' => $activity[$index]['last_queued_at'],
+                'last_started_at' => $activity[$index]['last_started_at'],
+                'stalled' => $activity[$index]['stalled'],
             ];
 
             $status = $this->worst($status, $this->queueStatus($depth['age']));
+
+            // Confirmed only (see QueueActivity::assess): a whole threshold with
+            // jobs waiting and no start is the dead worker of §3, as critical
+            // as a head older than `critical_age_seconds`.
+            if ($activity[$index]['stalled'] === true) {
+                $status = $this->worst($status, Status::Critical);
+            }
         }
 
         $max = (int) $this->config->get('constellation.queues.max', 20);
