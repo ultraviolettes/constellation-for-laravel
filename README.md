@@ -65,9 +65,17 @@ the Laravel scheduler, as for any scheduled task:
 ```
 
 The task builds the snapshot and **queues** its sending: a worker must be
-running on that connection. If the scheduler itself stops, no snapshot leaves
-at all — Constellation notices the silence after 45 minutes and opens an
-incident; no section of the snapshot can report its own absence.
+running on that connection (`CONSTELLATION_QUEUE_CONNECTION` /
+`CONSTELLATION_QUEUE` to give it its own). When the snapshot it just built
+shows that very queue blocked — `stalled`, or a job older than
+`critical_age_seconds` — the task sends synchronously instead: the snapshot
+reporting a dead worker must not wait behind it. A snapshot that still sat in
+the queue for more than 30 minutes is dropped, not sent late: a snapshot is a
+state, and the next one carries the same truth.
+
+If the scheduler itself stops, no snapshot leaves at all — Constellation
+notices the silence after 45 minutes and opens an incident; no section of the
+snapshot can report its own absence.
 
 ### 4. Restart your workers — after install and after every upgrade
 
@@ -85,7 +93,7 @@ scripts already run `queue:restart` on every deploy: check that yours does.
 
 ```bash
 php artisan about --only=constellation        # token, endpoint, cache, last send, workers
-php artisan monitor:send --dry-run --pretty   # print the payload, send nothing
+php artisan monitor:send --dry-run --pretty   # print the payload, send and write nothing
 php artisan monitor:send --sync               # send immediately and print the outcome
 php artisan monitor:send                      # queue the send (what the scheduler does)
 ```
@@ -150,13 +158,16 @@ the `queues` section carries:
 |---|---|
 | `last_queued_at` | last job put on this queue (delayed jobs are ignored) |
 | `last_started_at` | last job a worker started on it |
-| `stalled` | `true`: jobs were queued after the last start and no job started for `queues.stalled_after_seconds` (1 hour); `false`: no stall; `null`: cannot tell |
+| `stalled` | `true`: jobs were queued after the last start, the queue still holds work, and no job started for `queues.stalled_after_seconds` (1 hour); `false`: no stall; `null`: cannot tell |
 
-A stall is only reported once a second snapshot confirms it, with the same
-last start: through two timestamps, a dead worker and a queue idle for hours
-that received a job a second before the snapshot look identical. A confirmed
-stall turns the section `critical`, like a pending job older than
-`critical_age_seconds`.
+A stall turns the section `critical`, like a pending job older than
+`critical_age_seconds`. One snapshot is enough on the SDK side: through two
+timestamps, a dead worker and a queue idle for hours that received a job a
+second before the snapshot look the same, and it is the server that tells
+them apart — it opens an incident only on two consecutive `critical`
+snapshots. A queue whose depth reads zero is never stalled, whatever the
+timestamps say (`queue:clear`, a drained queue). Stalled queues are listed
+first and never cut by `queues.max`.
 
 `stalled` is `null` on the `array` cache, when the cache cannot be read, and
 when jobs are queued but no worker was ever seen starting one — a worker that
@@ -165,13 +176,20 @@ be a false alarm on every fresh install (see step 4 above).
 
 Why one hour: a single job holds the only worker of its queue for as long as
 it runs, and exports, imports or backups commonly take tens of minutes; a
-shorter threshold would call a busy worker dead. One hour also leaves room for
-the confirming snapshot, and stays well under what a daily or monthly report
-needs. Tune it in `config/constellation.php`.
+shorter threshold would call a busy worker dead. With the server's
+confirmation, an incident opens at most about 1 h 30 after the last start, well within
+what a maintenance report needs. Tune it in `config/constellation.php`.
 
-Cost: the listeners write at most once per queue and per minute in each
-process, whatever the job volume, and are not registered at all when the
-package is disabled, has no token, or the `queues` collector is removed.
+Cost, and your transactions: the listeners never write while you hold a
+database transaction open — with the `database` cache store, a write there
+would take a lock your other dispatches wait on, and on PostgreSQL a failing
+write would abort your transaction. They keep the timestamp in memory and
+write it after the response is sent (HTTP), or at once outside any
+transaction and otherwise after your commit (console and workers). At most one
+write per queue and per minute, across processes: the stored value is read
+first and only replaced when it is a minute old. Nothing is registered at all
+when the package is disabled, has no token, or the `queues` collector is
+removed.
 
 ## Writing your own collector
 
@@ -212,10 +230,18 @@ vendor/bin/phpstan analyse --memory-limit=2G
 vendor/bin/pest
 ```
 
+The transaction tests of the dead-worker signal also run on PostgreSQL when
+given a throwaway database (CI does):
+
+```bash
+CONSTELLATION_TEST_PGSQL_URL=pgsql://user:secret@127.0.0.1:5432/sdk_pg_test vendor/bin/pest
+```
+
 ### End-to-end test against a real Constellation server
 
 `vendor/bin/pest` skips it. `bin/e2e` runs it against a local checkout of
-`ultraviolettes/constellation`, without modifying it:
+`ultraviolettes/constellation`, without modifying its code, and refuses any
+database that is not on this machine:
 
 ```bash
 CONSTELLATION_SAAS_PATH=../constellation bin/e2e
@@ -227,7 +253,8 @@ SaaS factories, issues its token with `php artisan ingest:token:issue`, serves
 the SaaS on `127.0.0.1:8004` (`CONSTELLATION_SAAS_PORT`), sends a real snapshot
 from a Testbench application — a confirmed dead worker on a Redis queue that
 cannot report its head age included — then checks the rows in `snapshots` and
-`snapshot_sections` and stops the server. Plain HTTP is accepted locally
+`snapshot_sections`, deletes the throwaway team (everything else cascades)
+and its owner, and stops the server. Plain HTTP is accepted locally
 because the SaaS ships with `INGEST_REQUIRE_TLS=false` and runs with
 `APP_ENV=local`; nothing is bypassed.
 
