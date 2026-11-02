@@ -15,7 +15,7 @@ use Ultraviolettes\Constellation\Events\SnapshotSent;
  * that landed in `snapshots` and `snapshot_sections`. By hand:
  *
  *     CONSTELLATION_E2E_ENDPOINT=http://127.0.0.1:8004/api/v1/snapshots \
- *     CONSTELLATION_E2E_TOKEN=cst_… \
+ *     CONSTELLATION_E2E_TOKEN=cnst_ing_… \
  *     vendor/bin/pest --group=e2e
  *
  * `CONSTELLATION_E2E_OUTPUT`, when set, receives the idempotency key of the
