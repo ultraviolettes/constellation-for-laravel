@@ -1,7 +1,7 @@
 # Constellation for Laravel
 
 Send a periodic health snapshot of your Laravel application to
-[Constellation](https://app.constellation.dev).
+Constellation.
 
 No migration, no model, no route, no view. `composer require`, one key in
 `.env`, done.
@@ -35,7 +35,7 @@ CONSTELLATION_TOKEN=cnst_ing_...
 
 # Optional, with their defaults.
 CONSTELLATION_ENABLED=true
-CONSTELLATION_ENDPOINT=https://app.constellation.dev/api/v1/snapshots
+CONSTELLATION_ENDPOINT=https://<your Constellation host>/api/v1/snapshots   # shown by "Connect your app"
 CONSTELLATION_SCHEDULE=true            # register the send in your scheduler
 CONSTELLATION_CRON="*/15 * * * *"
 CONSTELLATION_QUEUE_CONNECTION=        # empty: your default connection
@@ -104,7 +104,7 @@ The `about` section never prints the token, only whether there is one:
   Constellation ............................................................
   Cache store .................................................. redis (redis)
   Enabled ...................................................... ENABLED
-  Endpoint ...................... https://app.constellation.dev/api/v1/snapshots
+  Endpoint ...................... https://<your Constellation host>/api/v1/snapshots
   Last successful send ............ 2026-11-02 14:00:02 UTC (3 minutes ago)
   Queue workers ............................................ job starts observed
   Token ........................................................ configured

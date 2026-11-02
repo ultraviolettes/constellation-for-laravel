@@ -35,6 +35,12 @@ final class SendSnapshotCommand extends Command
             return self::FAILURE;
         }
 
+        if (! $this->option('dry-run') && ! self::isHttpsOrLocal((string) config('constellation.endpoint'))) {
+            $this->components->error('No valid Constellation endpoint. Set CONSTELLATION_ENDPOINT to the URL shown by the "Connect your app" screen.');
+
+            return self::FAILURE;
+        }
+
         $snapshot = $builder->build(readOnly: (bool) $this->option('dry-run'));
 
         if ($this->option('dry-run')) {
@@ -145,5 +151,29 @@ final class SendSnapshotCommand extends Command
         }
 
         return $outcome;
+    }
+
+    /**
+     * The endpoint must be an absolute https URL. Plain http is accepted only
+     * for a local host, so a development SaaS can be reached without TLS.
+     */
+    private static function isHttpsOrLocal(string $endpoint): bool
+    {
+        $parts = parse_url($endpoint);
+
+        if (! is_array($parts) || ! isset($parts['scheme'], $parts['host'])) {
+            return false;
+        }
+
+        if ($parts['scheme'] === 'https') {
+            return true;
+        }
+
+        if ($parts['scheme'] !== 'http') {
+            return false;
+        }
+
+        return in_array($parts['host'], ['localhost', '127.0.0.1', '[::1]'], true)
+            || str_ends_with($parts['host'], '.test');
     }
 }

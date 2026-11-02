@@ -61,8 +61,8 @@ it('publishes the config file and nothing else', function () {
         ->and(array_values($paths)[0])->toEndWith('config'.DIRECTORY_SEPARATOR.'constellation.php');
 });
 
-it('merges its defaults so the client needs only a token', function () {
-    expect(config('constellation.endpoint'))->toBe('https://app.constellation.dev/api/v1/snapshots')
+it('merges its defaults, with no endpoint until the client sets one', function () {
+    expect(config('constellation.endpoint'))->toBeNull()
         ->and(config('constellation.window.max_hours'))->toBe(24)
         ->and(config('constellation.window.fallback_minutes'))->toBe(15)
         ->and(config('constellation.cache.ttl_days'))->toBe(7)

@@ -196,3 +196,35 @@ it('writes nothing at all in dry-run', function () {
         ->toBe([])
         ->and(cursorStore()->get(app(TaskHistory::class)->sinceKey()))->toBeNull();
 });
+
+it('refuses to send without a valid endpoint, and dispatches nothing', function (?string $endpoint) {
+    Bus::fake();
+    config()->set('constellation.endpoint', $endpoint);
+
+    $this->artisan('monitor:send')
+        ->expectsOutputToContain('No valid Constellation endpoint')
+        ->assertFailed();
+
+    Bus::assertNothingDispatched();
+})->with([
+    'missing' => null,
+    'relative' => '/api/v1/snapshots',
+    'plain http to a public host' => 'http://constellation.example/api/v1/snapshots',
+]);
+
+it('accepts plain http to a local development host', function (string $endpoint) {
+    Bus::fake();
+    config()->set('constellation.endpoint', $endpoint);
+
+    $this->artisan('monitor:send')->assertSuccessful();
+})->with([
+    'http://127.0.0.1:8000/api/v1/snapshots',
+    'http://localhost/api/v1/snapshots',
+    'http://constellation.test/api/v1/snapshots',
+]);
+
+it('still allows a dry run without an endpoint', function () {
+    config()->set('constellation.endpoint', null);
+
+    $this->artisan('monitor:send', ['--dry-run' => true])->assertSuccessful();
+});

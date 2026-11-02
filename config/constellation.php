@@ -10,7 +10,11 @@ return [
 
     'enabled' => env('CONSTELLATION_ENABLED', true),
 
-    'endpoint' => env('CONSTELLATION_ENDPOINT', 'https://app.constellation.dev/api/v1/snapshots'),
+    // No default on purpose: the product's public domain is not settled yet, and a
+    // default pointing at a host we do not control would ship every snapshot of
+    // an app that forgot this variable to whoever owns it. Copy the exact URL
+    // shown by the "Connect your app" screen.
+    'endpoint' => env('CONSTELLATION_ENDPOINT'),
 
     'token' => env('CONSTELLATION_TOKEN'),
 

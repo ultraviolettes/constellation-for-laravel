@@ -14,11 +14,9 @@ jobs:
       fail-fast: false
       matrix:
         php: ['8.2', '8.3', '8.4', '8.5']
-        # Laravel 11 is missing on purpose, not by oversight: every 11.x release
-        # now carries Packagist security advisories, and Composer refuses to
-        # install them. Testing 11 again means lifting that block for these
-        # cells — a decision for the package owner, still pending. Until then
-        # 11 stays declared (ADR 003 S2) and untested, like PHP 8.2 was (R1).
+        # Laravel 11 is no longer supported (decision of 2 November 2026): every
+        # 11.x release carries Packagist security advisories. The package follows
+        # the latest Laravel majors only — 12, 13 and the next ones.
         laravel: ['12.*', '13.*']
         include:
           - laravel: '12.*'
