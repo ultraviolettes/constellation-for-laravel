@@ -16,6 +16,7 @@ use Ultraviolettes\Constellation\Contracts\Collector;
 use Ultraviolettes\Constellation\Http\SnapshotClient;
 use Ultraviolettes\Constellation\Jobs\SendSnapshot;
 use Ultraviolettes\Constellation\Snapshot\CollectorRegistry;
+use Ultraviolettes\Constellation\Snapshot\LastDelivery;
 use Ultraviolettes\Constellation\Snapshot\Window;
 use Ultraviolettes\Constellation\Snapshot\WindowResolver;
 use Ultraviolettes\Constellation\Tests\Doubles\Queues\AgingQueue;
@@ -189,7 +190,7 @@ function onAttempt(SendSnapshot $job, int $attempts): MockInterface
 
 function handleSendSnapshot(SendSnapshot $job): void
 {
-    $job->handle(app(SnapshotClient::class), app(WindowResolver::class), app(Dispatcher::class));
+    $job->handle(app(SnapshotClient::class), app(WindowResolver::class), app(Dispatcher::class), app(LastDelivery::class));
 }
 
 /**

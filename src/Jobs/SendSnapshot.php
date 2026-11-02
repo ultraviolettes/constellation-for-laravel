@@ -16,6 +16,7 @@ use Ultraviolettes\Constellation\Events\SnapshotRejected;
 use Ultraviolettes\Constellation\Events\SnapshotSendFailed;
 use Ultraviolettes\Constellation\Events\SnapshotSent;
 use Ultraviolettes\Constellation\Http\SnapshotClient;
+use Ultraviolettes\Constellation\Snapshot\LastDelivery;
 use Ultraviolettes\Constellation\Snapshot\WindowResolver;
 
 /**
@@ -49,7 +50,7 @@ final class SendSnapshot implements ShouldQueue
         $this->onQueue(config('constellation.queue.queue'));
     }
 
-    public function handle(SnapshotClient $client, WindowResolver $windows, Dispatcher $events): void
+    public function handle(SnapshotClient $client, WindowResolver $windows, Dispatcher $events, LastDelivery $delivery): void
     {
         try {
             $response = $client->send($this->body, $this->idempotencyKey);
@@ -62,7 +63,10 @@ final class SendSnapshot implements ShouldQueue
         $status = $response->status();
 
         if ($status === 202) {
-            $windows->advance(CarbonImmutable::parse($this->windowTo), CarbonImmutable::now('UTC'));
+            $sentAt = CarbonImmutable::now('UTC');
+
+            $windows->advance(CarbonImmutable::parse($this->windowTo), $sentAt);
+            $delivery->record($this->body, $this->windowTo, $sentAt);
 
             $events->dispatch(new SnapshotSent(
                 $this->idempotencyKey,
