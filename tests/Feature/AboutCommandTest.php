@@ -42,7 +42,7 @@ function acceptSnapshot(string $body = ACCEPTED_BODY): void
 {
     Http::fake(['*' => Http::response(['status' => 'accepted'], 202)]);
 
-    $job = new SendSnapshot($body, '9b2f8c51-6c2d-4bb4-8a8e-1f0c2d3e4f5a', '2026-08-21T14:00:00Z');
+    $job = new SendSnapshot($body, '9b2f8c51-6c2d-4bb4-8a8e-1f0c2d3e4f5a', CarbonImmutable::now('UTC')->toIso8601ZuluString());
     onAttempt($job, 1);
     handleSendSnapshot($job);
 }
@@ -98,7 +98,7 @@ it('reports the last accepted snapshot and the collectors that could not look', 
 it('records nothing for a rejected snapshot', function () {
     Http::fake(['*' => Http::response(['error' => 'unauthenticated'], 401)]);
 
-    $job = new SendSnapshot(ACCEPTED_BODY, '9b2f8c51-6c2d-4bb4-8a8e-1f0c2d3e4f5a', '2026-08-21T14:00:00Z');
+    $job = new SendSnapshot(ACCEPTED_BODY, '9b2f8c51-6c2d-4bb4-8a8e-1f0c2d3e4f5a', CarbonImmutable::now('UTC')->toIso8601ZuluString());
     onAttempt($job, 1);
     handleSendSnapshot($job);
 

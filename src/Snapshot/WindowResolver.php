@@ -78,10 +78,21 @@ final class WindowResolver
     /**
      * Called from the send job only, and only on a 202 (S18). A snapshot that
      * was built then lost must leave its window open for the next one.
+     * Monotonic: the cursor only ever moves forward.
      */
     public function advance(CarbonImmutable $windowTo, CarbonImmutable $sentAt): void
     {
         try {
+            // Never backwards: a snapshot held up in a blocked queue can be
+            // accepted after a newer one went out synchronously (the server
+            // answers 202 stale_window), and moving the cursor back would make
+            // the next window overlap — failures counted twice (D18).
+            $current = $this->cursor($this->store());
+
+            if ($current !== null && $current->greaterThanOrEqualTo($windowTo)) {
+                return;
+            }
+
             $this->store()->put(
                 $this->key(),
                 [

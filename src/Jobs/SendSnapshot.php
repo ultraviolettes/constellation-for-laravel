@@ -41,6 +41,18 @@ final class SendSnapshot implements ShouldQueue
 
     public int $timeout = 30;
 
+    /**
+     * A snapshot that waited longer than this in the queue is dropped, not
+     * sent: a state, not a log (§1). When the worker that carries it died, the
+     * backlog would otherwise reach the server in one burst once it recovers.
+     *
+     * Deliberately not `retryUntil()`: an expired job is failed by the worker
+     * itself, before `handle()`, and `queue:work` logs it to `failed_jobs` —
+     * which the `jobs` and `queues` collectors read as the client's own
+     * failures. Dropping here ends the job normally, with a warning.
+     */
+    public const STALE_AFTER_SECONDS = 1800;
+
     public function __construct(
         public string $body,
         public string $idempotencyKey,
@@ -52,6 +64,20 @@ final class SendSnapshot implements ShouldQueue
 
     public function handle(SnapshotClient $client, WindowResolver $windows, Dispatcher $events, LastDelivery $delivery): void
     {
+        $waited = CarbonImmutable::now('UTC')->getTimestamp() - CarbonImmutable::parse($this->windowTo)->getTimestamp();
+
+        if ($waited > self::STALE_AFTER_SECONDS) {
+            Log::warning('Constellation dropped a snapshot that waited too long in the queue.', [
+                'idempotency_key' => $this->idempotencyKey,
+                'window_to' => $this->windowTo,
+                'waited_seconds' => $waited,
+            ]);
+
+            $events->dispatch(new SnapshotSendFailed($this->idempotencyKey, 'stale', $this->attempts()));
+
+            return;
+        }
+
         try {
             $response = $client->send($this->body, $this->idempotencyKey);
         } catch (ConnectionException $exception) {

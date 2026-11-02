@@ -101,10 +101,12 @@ final class TaskHistory
      *
      * @return array{at: CarbonImmutable, fresh: bool}
      */
-    public function observedSince(CarbonImmutable $now): array
+    public function observedSince(CarbonImmutable $now, bool $persist = true): array
     {
         $key = $this->sinceKey();
-        $fresh = $this->store()->add($key, $now->toIso8601ZuluString(), self::QUARTER);
+        // A dry run reads the base and never lays it: an absent base reads as
+        // fresh, exactly what the real run will then write.
+        $fresh = $persist && $this->store()->add($key, $now->toIso8601ZuluString(), self::QUARTER);
         $stored = $this->store()->get($key);
 
         if ($fresh || ! is_string($stored)) {

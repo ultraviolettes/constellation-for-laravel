@@ -71,7 +71,7 @@ final class ScheduleCollector implements Collector
             $inventory[$id] = $event;
         }
 
-        $history = $this->history($now, array_keys($inventory));
+        $history = $this->history($now, array_keys($inventory), ! $window->readOnly);
         $limit = $now->subSeconds((int) $this->config->get('constellation.schedule_tasks.grace_seconds', 90));
         $cap = (int) $this->config->get('constellation.schedule_tasks.missed_cap', 100);
         $sendExec = (bool) $this->config->get('constellation.schedule_tasks.send_exec_command', false);
@@ -143,12 +143,12 @@ final class ScheduleCollector implements Collector
      * @param  list<string>  $ids
      * @return array{since: CarbonImmutable, states: array<string, array{ran_at: int|null, duration_ms: int|null, exit_code: int|null, failed_at: int|null, exception_class: string|null, skipped_at: int|null, overlapped_at: int|null}>, blind: bool, reason: string|null}
      */
-    private function history(CarbonImmutable $now, array $ids): array
+    private function history(CarbonImmutable $now, array $ids, bool $persist): array
     {
         $states = [];
 
         try {
-            $observed = $this->history->observedSince($now);
+            $observed = $this->history->observedSince($now, $persist);
 
             foreach ($ids as $id) {
                 $states[$id] = $this->history->read($id);

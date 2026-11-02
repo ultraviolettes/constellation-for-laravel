@@ -5,6 +5,7 @@ namespace Ultraviolettes\Constellation\Console;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Bus\Dispatcher as Bus;
 use Illuminate\Contracts\Events\Dispatcher as Events;
+use Ultraviolettes\Constellation\Collectors\Queues\QueueActivity;
 use Ultraviolettes\Constellation\Events\SnapshotRejected;
 use Ultraviolettes\Constellation\Events\SnapshotSendFailed;
 use Ultraviolettes\Constellation\Events\SnapshotSent;
@@ -34,7 +35,7 @@ final class SendSnapshotCommand extends Command
             return self::FAILURE;
         }
 
-        $snapshot = $builder->build();
+        $snapshot = $builder->build(readOnly: (bool) $this->option('dry-run'));
 
         if ($this->option('dry-run')) {
             $this->line($this->option('pretty') ? $snapshot->toPrettyJson() : $snapshot->body);
@@ -48,6 +49,17 @@ final class SendSnapshotCommand extends Command
             return $this->sendNow($job, $bus, $events);
         }
 
+        // The snapshot that reports a dead worker must not wait behind it: with
+        // one worker on `default`, the send job queues exactly where the
+        // stall is.
+        $blocked = $this->blockedSendQueue($snapshot->payload);
+
+        if ($blocked !== null) {
+            $this->components->warn("The queue the snapshot goes through ({$blocked}) looks blocked: sending it synchronously.");
+
+            return $this->sendNow($job, $bus, $events);
+        }
+
         $bus->dispatch($job);
 
         $this->components->info(sprintf(
@@ -57,6 +69,45 @@ final class SendSnapshotCommand extends Command
         ));
 
         return self::SUCCESS;
+    }
+
+    /**
+     * The connection and queue the send job would go to, as the snapshot just
+     * collected sees them: stalled, or holding a job older than
+     * `queues.critical_age_seconds`.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    private function blockedSendQueue(array $payload): ?string
+    {
+        $connection = config('constellation.queue.connection') ?: config('queue.default');
+
+        if (! is_string($connection) || $connection === '') {
+            return null;
+        }
+
+        $queue = config('constellation.queue.queue');
+        $activity = $this->laravel->make(QueueActivity::class);
+        $target = $activity->canonical($connection, is_string($queue) ? $queue : null);
+        $critical = (int) config('constellation.queues.critical_age_seconds', 900);
+
+        $sections = $payload['sections'] ?? [];
+        $rows = is_array($sections) ? ($sections['queues']['data']['queues'] ?? []) : [];
+
+        foreach (is_array($rows) ? $rows : [] as $row) {
+            if (! is_array($row) || ($row['connection'] ?? null) !== $connection
+                || $activity->canonical($connection, (string) ($row['name'] ?? '')) !== $target) {
+                continue;
+            }
+
+            $age = $row['oldest_pending_age_seconds'] ?? null;
+
+            if (($row['stalled'] ?? null) === true || (is_int($age) && $age >= $critical)) {
+                return $connection.':'.$target;
+            }
+        }
+
+        return null;
     }
 
     private function sendNow(SendSnapshot $job, Bus $bus, Events $events): int
