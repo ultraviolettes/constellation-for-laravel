@@ -3,29 +3,19 @@
 Send a periodic health snapshot of your Laravel application to
 Constellation.
 
-No migration, no model, no route, no view. `composer require`, one key in
-`.env`, done.
+No migration, no model, no route, no view. `composer require`, two keys in
+`.env` (token and endpoint), and the Laravel scheduler running.
 
 ## Installation
 
 ### 1. Require the package
 
-The package is not on Packagist yet: declare the repository in your
-application's `composer.json`, then require it.
-
-```json
-"repositories": [
-    { "type": "vcs", "url": "https://github.com/ultraviolettes/constellation-for-laravel" }
-]
-```
-
 ```bash
-composer require ultraviolettes/constellation-for-laravel:dev-main
+composer require ultraviolettes/constellation-for-laravel
 ```
 
-No release is tagged yet, hence `dev-main`; pin a tag as soon as one exists.
-If the repository is private to you, Composer needs a GitHub token once:
-`composer config --global github-oauth.github.com <token>`.
+Requires Laravel 12 (PHP 8.2+) or 13 (PHP 8.3+). Composer pins `^0.1`: you get
+the 0.1.x fixes, never a 0.2 without asking for it.
 
 ### 2. Set the environment
 
