@@ -3,8 +3,8 @@
 Send a periodic health snapshot of your Laravel application to
 Constellation.
 
-No migration, no model, no route, no view. `composer require`, one key in
-`.env`, done.
+No migration, no model, no route, no view. `composer require`, two keys in
+`.env` (token and endpoint), and the Laravel scheduler running.
 
 ## Installation
 
